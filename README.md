@@ -46,6 +46,16 @@ Current Stable Release:
 
 ---
 
+## Official YouTube Channel
+
+For tutorials, updates, release announcements, troubleshooting guides, and PS5 jailbreak content, visit:
+
+📺 https://www.youtube.com/@KINGDKAK
+
+If you find the project useful, consider subscribing to stay updated on future releases and community developments.
+
+---
+
 ## How To Use
 
 1. Launch **PS5_FFPFSC_PRO.exe**
@@ -138,6 +148,9 @@ Bizkut PS5 FFPFS CLI
 
 Frontend:
 PS5 FFPFSC PRO
+
+Official YouTube:
+https://www.youtube.com/@KINGDKAK
 
 Special thanks to everyone who tested the beta and release candidate builds.
 
