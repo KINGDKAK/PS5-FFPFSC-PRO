@@ -1,4 +1,5 @@
-('C:\\PS5_FFPFSC_PRO_v1.2.2\\build\\PS5_FFPFSC_PRO_v1.2.2\\PYZ-00.pyz',
+('E:\\PS5_FFPFSC_PRO_v1.2.2 Source '
+ 'Code!\\build\\PS5_FFPFSC_PRO_v1.2.2\\PYZ-00.pyz',
  [('Cryptodome',
    'C:\\Users\\yasefdogan\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\Cryptodome\\__init__.py',
    'PYMODULE'),

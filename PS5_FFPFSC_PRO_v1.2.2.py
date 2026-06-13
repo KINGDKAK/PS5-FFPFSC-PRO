@@ -2190,8 +2190,7 @@ class App:
         main = ctk.CTkFrame(self.root, fg_color=BLACK, corner_radius=0)
         main.grid(row=0, column=0, sticky="nsew")
         main.grid_columnconfigure(0, weight=1)
-        main.grid_rowconfigure(2, weight=2)       # content area — can shrink
-        main.grid_rowconfigure(4, weight=1, minsize=220)  # log always visible
+        main.grid_rowconfigure(2, weight=1)       # vertical paned window fills here
 
         # ── Header ──────────────────────────────────────────────────────────
         header = ctk.CTkFrame(main, fg_color=BLACK)
@@ -2259,9 +2258,25 @@ class App:
         ctk.CTkEntry(top, textvariable=self.temp_var, placeholder_text="Temp folder on fast drive...",
                       fg_color=CARD, border_color=BORDER2, text_color=WHITE).grid(row=0, column=5, sticky="ew", padx=(0, 14), pady=14)
 
+        # ── Vertical paned window: content area (top) + log pane (bottom) ──────
+        # Gives user a draggable sash to resize the log area
+        _dark = ctk.get_appearance_mode().lower() == "dark"
+        _sash_bg = "#1a1a2e" if _dark else "#c0c0c0"
+        _pane_bg = "#050505" if _dark else "#f0f0f0"
+        self._paned = tk.PanedWindow(main, orient=tk.VERTICAL,
+                                      sashwidth=5, sashrelief=tk.GROOVE,
+                                      bg=_sash_bg, borderwidth=0, sashpad=2)
+        self._paned.grid(row=2, column=0, sticky="nsew", padx=6)
+
+        _top_pane = tk.Frame(self._paned, bg=_pane_bg)
+        self._paned.add(_top_pane, stretch="always", minsize=220)
+
+        self._bot_pane = tk.Frame(self._paned, bg=_pane_bg)
+        self._paned.add(self._bot_pane, stretch="always", minsize=180)
+
         # ── Content area (3 columns: left queue, center progress, right details)
-        content = ctk.CTkFrame(main, fg_color=BLACK)
-        content.grid(row=2, column=0, sticky="nsew", padx=18, pady=6)
+        content = ctk.CTkFrame(_top_pane, fg_color=BLACK)
+        content.pack(fill="both", expand=True, padx=12, pady=6)
         content.grid_columnconfigure(0, weight=2)   # left: queue + options
         content.grid_columnconfigure(1, weight=3)   # center: progress + stages
         content.grid_columnconfigure(2, weight=2)   # right: game details + cmd
@@ -2367,7 +2382,7 @@ class App:
             ("Verbose mkpfs output (debug)",       self.verbose_var),
         ]:
             ctk.CTkCheckBox(opts, text=textv, variable=var, fg_color=GREEN, hover_color=GREEN2,
-                             text_color=WHITE).pack(anchor="w", pady=5)
+                             text_color=WHITE).pack(anchor="w", pady=2)
 
         ctk.CTkLabel(opts,
                       text="  FOLDER button detects single games and multi-dump parent folders.",
@@ -2549,7 +2564,9 @@ class App:
         self.command_label.grid(row=1, column=0, sticky="nw", padx=14, pady=(0, 10))
 
         # ── Bottom: Tabbed Logs / Status / History / Statistics ─────────────
-        bottom = self.panel(main, row=4, column=0, sticky="nsew", padx=18, pady=(10, 14))
+        bottom = ctk.CTkFrame(self._bot_pane, fg_color=PANEL, border_width=1,
+                               border_color=BORDER, corner_radius=10)
+        bottom.pack(fill="both", expand=True, padx=12, pady=(6, 14))
         bottom.grid_columnconfigure(0, weight=1)
         bottom.grid_rowconfigure(0, weight=1)
 
@@ -2795,8 +2812,15 @@ class App:
     def _toggle_theme(self):
         self._theme = "light" if self._theme == "dark" else "dark"
         ctk.set_appearance_mode(self._theme)
-        # No manual recoloring needed — all color constants are (light, dark) tuples
-        # so CTk picks the correct value automatically on appearance mode change.
+        # Update the plain tk.PanedWindow sash color (CTk doesn't manage it)
+        try:
+            _dark = self._theme == "dark"
+            self._paned.configure(bg="#1a1a2e" if _dark else "#c0c0c0")
+            _pane_bg = "#050505" if _dark else "#f0f0f0"
+            for child in self._paned.panes():
+                self._paned.nametowidget(child).configure(bg=_pane_bg)
+        except Exception:
+            pass
 
     def open_settings(self):
         if self._settings_win and self._settings_win.winfo_exists():

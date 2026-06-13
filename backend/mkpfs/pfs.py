@@ -19,11 +19,13 @@ import subprocess
 import time
 import uuid
 import zlib
+from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
+from multiprocessing.pool import AsyncResult, Pool
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, Protocol, TypeVar
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
@@ -1225,6 +1227,56 @@ def _iter_pfsc_block_worker_args(
         yield block_offset, logical_block_size, zlib_level
 
 
+# How many block tasks a single worker process may have queued, in-progress, or
+# completed-but-unconsumed at once. Bounds memory use independent of file size.
+_PFSC_BLOCK_INFLIGHT_PER_WORKER: int = 4
+
+_PfscBlockResultT = TypeVar("_PfscBlockResultT")
+
+
+def _imap_bounded(
+    pool: Pool,
+    func: Callable[[tuple[int, int, int]], _PfscBlockResultT],
+    args_iter: Iterator[tuple[int, int, int]],
+    max_in_flight: int,
+) -> Iterator[_PfscBlockResultT]:
+    """Yield ``func(args)`` results in order using a bounded submission window.
+
+    ``multiprocessing.Pool.imap`` lets worker processes race arbitrarily far
+    ahead of the consumer: completed-but-unconsumed results accumulate in the
+    pool's internal buffers (``IMapIterator``) with no inherent bound. For a
+    large file split into many small blocks, a slow consumer (sequential disk
+    I/O) combined with many fast worker processes can buffer gigabytes of
+    raw/compressed block data before it is ever written out, exhausting
+    memory. This helper instead submits at most ``max_in_flight`` tasks via
+    ``apply_async`` and waits for the oldest pending result before submitting
+    more, keeping memory use bounded regardless of file size or worker count.
+
+    Args:
+        pool: Worker pool used to submit block tasks.
+        func: Per-block worker function.
+        args_iter: Iterator yielding per-block worker argument tuples in order.
+        max_in_flight: Maximum number of outstanding/unconsumed block tasks.
+
+    Yields:
+        Results of ``func`` in the same order as ``args_iter``.
+    """
+    pending: deque[AsyncResult] = deque()
+    args_iter = iter(args_iter)
+    exhausted: bool = False
+    while True:
+        while not exhausted and len(pending) < max_in_flight:
+            try:
+                worker_args: tuple[int, int, int] = next(args_iter)
+            except StopIteration:
+                exhausted = True
+                break
+            pending.append(pool.apply_async(func, (worker_args,)))
+        if not pending:
+            return
+        yield pending.popleft().get()
+
+
 def _compress_pfsc_block_lengths_worker(args: tuple[int, int, int]) -> tuple[int, int]:
     """Compress one logical block and return raw/compressed lengths.
 
@@ -1244,11 +1296,7 @@ def _compress_pfsc_block_lengths_worker(args: tuple[int, int, int]) -> tuple[int
     )
     padded_chunk: bytes = raw_chunk.ljust(logical_block_size, b"\x00")
     compressed_chunk: bytes = zlib.compress(padded_chunk, level=zlib_level)
-    result = (len(raw_chunk), len(compressed_chunk))
-    # Free buffers before sending result back to the parent process
-    del raw_chunk, padded_chunk, compressed_chunk
-    import gc; gc.collect()
-    return result
+    return len(raw_chunk), len(compressed_chunk)
 
 
 def _compress_pfsc_block_payload_worker(args: tuple[int, int, int]) -> tuple[bytes, bytes]:
@@ -1270,11 +1318,7 @@ def _compress_pfsc_block_payload_worker(args: tuple[int, int, int]) -> tuple[byt
     )
     padded_chunk: bytes = raw_chunk.ljust(logical_block_size, b"\x00")
     compressed_chunk: bytes = zlib.compress(padded_chunk, level=zlib_level)
-    # Return payload after freeing intermediate buffers
-    result = (raw_chunk, compressed_chunk)
-    del raw_chunk, padded_chunk, compressed_chunk
-    import gc; gc.collect()
-    return result
+    return raw_chunk, compressed_chunk
 
 
 def _analyze_pfsc_file_storage(
@@ -1335,10 +1379,6 @@ def _analyze_pfsc_file_storage(
                     chosen_payload_size += len(padded_chunk)
                 if progress_callback is not None:
                     progress_callback(len(chunk))
-                # Free per‑block buffers promptly
-                del chunk, padded_chunk, compressed_chunk
-                # Optional explicit GC – cheap for large loops
-                import gc; gc.collect()
     else:
         worker_args_iter: Iterator[tuple[int, int, int]] = _iter_pfsc_block_worker_args(
             block_count=block_count,
@@ -1350,7 +1390,12 @@ def _analyze_pfsc_file_storage(
             initializer=_init_pfsc_block_worker_for_pool,
             initargs=(abs_path,),
         ) as pool:
-            results_iter = pool.imap(_compress_pfsc_block_lengths_worker, worker_args_iter, chunksize=8)
+            results_iter = _imap_bounded(
+                pool,
+                _compress_pfsc_block_lengths_worker,
+                worker_args_iter,
+                max_in_flight=effective_block_workers * _PFSC_BLOCK_INFLIGHT_PER_WORKER,
+            )
             raw_block_len: int
             compressed_block_len: int
             for raw_block_len, compressed_block_len in results_iter:
@@ -1460,7 +1505,12 @@ def _encode_pfsc_into_handle(
             initializer=_init_pfsc_block_worker_for_pool,
             initargs=(source_path,),
         ) as pool:
-            results_iter = pool.imap(_compress_pfsc_block_payload_worker, worker_args_iter, chunksize=8)
+            results_iter = _imap_bounded(
+                pool,
+                _compress_pfsc_block_payload_worker,
+                worker_args_iter,
+                max_in_flight=effective_block_workers * _PFSC_BLOCK_INFLIGHT_PER_WORKER,
+            )
             raw_chunk: bytes
             compressed_chunk: bytes
             for raw_chunk, compressed_chunk in results_iter:
@@ -1644,7 +1694,7 @@ def write_source_to_offset(out: BinaryIO, source_path: Path, payload_size: int, 
     if payload_size <= 0:
         return
     out.seek(offset)
-    chunk_size: int = 256 * 1024
+    chunk_size: int = 1024 * 1024
     with source_path.open("rb") as source_file:
         _copy_exact_bytes(
             source_file=source_file,
@@ -3792,16 +3842,6 @@ def build_pfs_stream_single_file(
         requested_cpu_count=compression_cpu_count,
         file_size=raw_size,
     )
-    # For very large single files (e.g., >1 GB) limit parallel workers to avoid
-    # excessive memory usage in the multiprocessing pool. The compression is
-    # performed block‑by‑block, so a single worker suffices and keeps RAM bounded.
-    # Limit parallel workers for very large files to keep RAM usage bounded.
-    # If the file exceeds 1 GB we still allow multiple workers, but cap the count
-    # to a safe maximum (default 4). This keeps the process fast while preventing
-    # each worker from allocating huge buffers that collectively blow RAM.
-    MAX_WORKERS_FOR_LARGE = 4
-    if raw_size > 1 * 1024 * 1024 * 1024:  # 1 GB threshold
-        block_workers = min(block_workers, MAX_WORKERS_FOR_LARGE)
     if should_compress and block_workers > 1:
         temp_root: Path = resolve_temp_root(temp_folder=None)
         non_local_warning: str | None = get_non_local_volume_warning(

@@ -209,8 +209,11 @@ def pack_folder_uncompressed(
         "--no-adjust-output-file-extension",
         "--version", "PS5",
         "--inode-bits", "32",
-        "--block-size", str(block_size),
     ]
+    # Only pass --block-size when non-default so older pip-installed mkpfs versions
+    # (< 0.0.7 which introduced this flag) don't fail with "unrecognized argument".
+    if str(block_size) != "auto":
+        cmd += ["--block-size", str(block_size)]
     if temp_folder:
         cmd += ["--temp-folder", str(temp_folder)]
     if verbose:
@@ -252,8 +255,9 @@ def compress_file_to_ffpfsc(
         "--compression-level", str(compression_level),
         "--cpu-count", str(cpu_count),
         "--threshold-gain", str(threshold_gain),
-        "--block-size", str(block_size),
     ]
+    if str(block_size) != "auto":
+        cmd += ["--block-size", str(block_size)]
     if temp_folder:
         cmd += ["--temp-folder", str(temp_folder)]
     if verbose:
@@ -364,9 +368,43 @@ def main() -> None:
         pass
 
     # Pack options forwarded to mkpfs
+    effective_cpu = max(0, args.cpu_count)
+
+    # Auto-cap workers for large sources when the user left cpu_count at 0 (auto).
+    # mkpfs spawns one worker per core; each worker buffers compressed data in RAM.
+    # For files > 10 GB this easily exhausts memory on typical PCs.
+    # Cap at 4 automatically — still fast, but avoids OOM crashes.
+    # If the user explicitly set a cpu_count we honour it without override.
+    if effective_cpu == 0:
+        try:
+            source_bytes = (
+                game_folder.stat().st_size if game_folder.is_file()
+                else sum(f.stat().st_size for f in game_folder.rglob("*") if f.is_file())
+            )
+            _GB = 1024 ** 3
+            if source_bytes > 10 * _GB:
+                import os as _os
+                all_cores = _os.cpu_count() or 4
+                if source_bytes > 30 * _GB:
+                    # Very large game (>30 GB) — cap at 2 to avoid total RAM exhaustion
+                    # even on systems with 32 GB RAM (Callisto Protocol, Days Gone, etc.)
+                    cpu_auto_cap = min(2, max(1, all_cores))
+                else:
+                    # Large game (10–30 GB) — cap at 4
+                    cpu_auto_cap = min(4, max(1, all_cores))
+                print(
+                    f"[INFO] Source is {source_bytes / _GB:.1f} GB — auto-capping workers "
+                    f"to {cpu_auto_cap} to prevent out-of-memory crashes "
+                    f"(override with the CPU cores slider).",
+                    flush=True,
+                )
+                effective_cpu = cpu_auto_cap
+        except Exception:
+            pass  # stat failed — leave effective_cpu at 0 (mkpfs default)
+
     pack_kwargs = dict(
         compression_level=max(0, min(9, args.compression_level)),
-        cpu_count=max(0, args.cpu_count),
+        cpu_count=effective_cpu,
         threshold_gain=max(0, args.threshold_gain),
         block_size=args.block_size,
         verbose=args.verbose,

@@ -30,6 +30,13 @@ WHAT'S NEW IN v1.2.2
   - Community compat: deduplication + startup re-test reminder
   - ShadowMount guide updated with XMB shortcut warning (Step 1a)
   - Log no longer flooded with repeated 0% progress lines
+  - .ffpkg disk images now supported (queue directly, no extraction)
+  - Block size selector in Compression Tuning bar (auto/auto-fit/65536/32768/16384)
+  - MkPFS v0.0.8 bundled — no pip install required
+  - Error messages now include specific settings suggestions (CPU cores, Level, etc.)
+  - Auto-worker-cap: >10 GB games cap at 4 cores, >30 GB cap at 2 (prevents OOM)
+  - Log scroll: no longer auto-snaps to bottom while you're reading
+  - --block-size only passed to mkpfs when non-default (fixes older pip mkpfs installs)
 
 ════════════════════════════════════════════════
 
