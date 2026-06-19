@@ -1,0 +1,251 @@
+name: Build GUI
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      upload_release:
+        description: 'Upload artifacts to release for the selected tag'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build-gui:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: Windows-x64
+            artifact: PS5-FFPFS-CLI-Windows-x64.exe
+          - os: macos-latest
+            target: macOS-universal
+            artifact: PS5-FFPFS-CLI-macOS-universal.zip
+          - os: ubuntu-latest
+            target: Linux-x64
+            artifact: PS5-FFPFS-CLI-Linux-x64.AppImage
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up MSVC (Windows only)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system pyinstaller customtkinter mkpfs setuptools wheel py7zr rarfile tkinterdnd2
+
+      - name: Build unrar extension
+        run: |
+          uv pip install --system ./unrar
+
+      - name: Generate dummy assets/icon.png
+        shell: bash
+        run: |
+          mkdir -p assets
+          python -c '
+          png_data = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63643030304001001500010a273b180000000049454e44ae426082")
+          with open("assets/icon.png", "wb") as f:
+              f.write(png_data)
+          '
+
+      # ------------------------------------------------------------------ #
+      # Windows: single-file executable
+      # ------------------------------------------------------------------ #
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          pyinstaller \
+            --name PS5-FFPFS-CLI \
+            --onefile \
+            --windowed \
+            --hidden-import tkinter \
+            --hidden-import mkpfs.cli \
+            --hidden-import unrar \
+            --hidden-import unrar.rarfile \
+            --hidden-import unrar._unrar \
+            --hidden-import py7zr \
+            --hidden-import py7zr.helpers \
+            --hidden-import py7zr.compressor \
+            --hidden-import rarfile \
+            --hidden-import tkinterdnd2 \
+            --collect-data tkinter \
+            --collect-binaries tkinter \
+            --collect-data customtkinter \
+            --collect-data mkpfs \
+            --collect-binaries mkpfs \
+            --distpath dist-gui \
+            gui.py
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Move-Item -Path "dist-gui/PS5-FFPFS-CLI.exe" -Destination "${{ matrix.artifact }}"
+          echo "artifact_name=${{ matrix.artifact }}" >> $env:GITHUB_ENV
+
+      # ------------------------------------------------------------------ #
+      # macOS: .app bundle with optional ad-hoc signing
+      # ------------------------------------------------------------------ #
+      - name: Build (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          pyinstaller \
+            --name PS5-FFPFS-CLI \
+            --windowed \
+            --osx-bundle-identifier com.bizkut.ps5-ffpfs-cli \
+            --hidden-import tkinter \
+            --hidden-import mkpfs.cli \
+            --hidden-import unrar \
+            --hidden-import unrar.rarfile \
+            --hidden-import unrar._unrar \
+            --hidden-import py7zr \
+            --hidden-import py7zr.helpers \
+            --hidden-import py7zr.compressor \
+            --hidden-import rarfile \
+            --hidden-import tkinterdnd2 \
+            --collect-data tkinter \
+            --collect-binaries tkinter \
+            --collect-data customtkinter \
+            --collect-data mkpfs \
+            --collect-binaries mkpfs \
+            --distpath dist-gui \
+            gui.py
+
+      - name: Sign (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          codesign --deep --force --sign - "dist-gui/PS5-FFPFS-CLI.app"
+          xattr -d -r com.apple.quarantine "dist-gui/PS5-FFPFS-CLI.app" 2>/dev/null || true
+          echo "Ad-hoc signed dist-gui/PS5-FFPFS-CLI.app"
+
+      - name: Package (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "dist-gui/PS5-FFPFS-CLI.app" "${{ matrix.artifact }}"
+          echo "artifact_name=${{ matrix.artifact }}" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------ #
+      # Linux: single binary wrapped as AppImage
+      # ------------------------------------------------------------------ #
+      - name: Build (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pyinstaller \
+            --name PS5-FFPFS-CLI \
+            --onefile \
+            --windowed \
+            --hidden-import tkinter \
+            --hidden-import mkpfs.cli \
+            --hidden-import unrar \
+            --hidden-import unrar.rarfile \
+            --hidden-import unrar._unrar \
+            --hidden-import py7zr \
+            --hidden-import py7zr.helpers \
+            --hidden-import py7zr.compressor \
+            --hidden-import rarfile \
+            --hidden-import tkinterdnd2 \
+            --collect-data tkinter \
+            --collect-binaries tkinter \
+            --collect-data customtkinter \
+            --collect-data mkpfs \
+            --collect-binaries mkpfs \
+            --distpath dist-gui \
+            gui.py
+
+      - name: Package AppImage (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libfuse2
+
+          binary="dist-gui/PS5-FFPFS-CLI"
+          appdir="PS5-FFPFS-CLI.AppDir"
+          mkdir -p "$appdir/usr/bin"
+          cp "$binary" "$appdir/usr/bin/PS5-FFPFS-CLI"
+          chmod +x "$appdir/usr/bin/PS5-FFPFS-CLI"
+
+          printf '%s\n' '[Desktop Entry]' 'Name=PS5-FFPFS-CLI' 'Exec=PS5-FFPFS-CLI' 'Icon=ps5-ffpfs-cli' \
+            'Type=Application' 'Categories=Utility;' 'Comment=PS5 PFS CLI Container Builder' \
+            > "$appdir/PS5-FFPFS-CLI.desktop"
+
+          cp assets/icon.png "$appdir/ps5-ffpfs-cli.png"
+
+          wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage" -O linuxdeploy
+          chmod +x linuxdeploy
+          ./linuxdeploy --appdir "$appdir" --output appimage
+
+          mv PS5-FFPFS-CLI*.AppImage "${{ matrix.artifact }}"
+          echo "artifact_name=${{ matrix.artifact }}" >> "$GITHUB_ENV"
+
+      - name: Generate checksum
+        shell: bash
+        run: |
+          python -c "from pathlib import Path; import hashlib; path = Path('${{ env.artifact_name }}'); digest = hashlib.sha256(path.read_bytes()).hexdigest(); Path(str(path) + '.sha256').write_text(f'{digest}  {path.name}\n')"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ env.artifact_name }}
+            ${{ env.artifact_name }}.sha256
+
+  release:
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_release == 'true' && startsWith(github.ref, 'refs/tags/v'))
+    needs: build-gui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Generate release notes from commits
+        id: notes
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          prev=$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || echo "")
+          {
+            echo "## Changes"
+            echo ""
+            if [ -z "$prev" ]; then
+              # First release: limit to last 30 days to avoid dumping entire upstream history
+              git log --pretty=format:'- %s' --no-merges --since="30 days ago" | awk '!seen[$0]++'
+            else
+              git log --pretty=format:'- %s' --no-merges "${prev}..${tag}" | awk '!seen[$0]++'
+            fi
+          } > release_notes.md
+          echo "body_path=release_notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          body_path: ${{ steps.notes.outputs.body_path }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

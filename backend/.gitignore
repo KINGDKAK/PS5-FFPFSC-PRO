@@ -1,0 +1,30 @@
+# Large PS5 image files
+*.ffpfs
+*.ffpfsc
+*.exfat
+*.vhd
+*.diskpart
+
+# Python cache files
+__pycache__/
+*.pyc
+.venv/
+
+# Build artifacts
+build/
+dist/
+dist-gui/
+*.egg-info/
+*.so
+*.pyd
+*.dylib
+*.spec
+
+# Test artifacts
+.pytest_cache/
+test_data/
+
+# Local IDEs / system files
+.DS_Store
+.idea/
+.vscode/
