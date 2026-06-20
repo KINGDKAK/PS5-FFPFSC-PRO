@@ -10,23 +10,70 @@ The goal is simple: make PS5 game compression easier without needing command-lin
 
 ---
 
-## Features
+<h1 align="center">🚀 PS5 FFPFSC PRO</h1>
+
+<p align="center">
+  PS5 Game Compression Utility
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-Windows-blue">
+  <img src="https://img.shields.io/badge/Backend-MkPFS%20%2B%20FFPFSC-orange">
+  <img src="https://img.shields.io/badge/Version-v1.3.0-green">
+</p>
+
+<p align="center">
+  <a href="https://github.com/KINGDKAK/PS5-FFPFSC-PRO/releases">📥 Download</a> •
+  <a href="https://youtube.com/@KINGDKAK">📺 YouTube</a> •
+  <a href="https://ko-fi.com/KINGDKAK">☕ Ko-fi</a>
+</p>
+
+---
+
+## 📦 About
+
+PS5 FFPFSC PRO is a Windows GUI for compressing PlayStation 5 game dumps using MkPFS and FFPFSC.
+
+The goal is simple: make PS5 game compression easy without requiring command-line tools or complicated setup.
+
+Whether you're compressing a single game, batch processing multiple titles, or browsing community compatibility reports, everything can be done from one interface.
+
+---
+
+## 🖼️ Screenshots
+
+### Main Window
+
+![PS5 FFPFSC PRO Main Window](screenshots/main-window.png)
+
+### Community Compatibility Database
+
+![Community Database](screenshots/community-database.png)
+
+### Compression Progress
+
+![Compression Progress](screenshots/compression-progress.png)
+
+---
+
+## ✨ Features
 
 * Compress PS5 game dumps into `.ffpfsc`
 * Supports game folders, `.exfat`, `.ffpkg`, `.zip`, `.rar`, and `.7z`
 * Drag-and-drop support
 * Batch compression
+* Multi-image queueing
 * Compression tuning options
+* Automatic update checker
 * Live RAM meter
-* Auto update checker
-* Community Compatibility Database
 * Detailed logs and progress tracking
 * Per-game output folders
 * Compact mode
+* Community Compatibility Database
 
 ---
 
-## Supported Inputs
+## 📂 Supported Inputs
 
 * PS5 game folders
 * `.exfat` images
@@ -37,32 +84,33 @@ The goal is simple: make PS5 game compression easier without needing command-lin
 
 ---
 
-## Community Compatibility Database
+## 🌐 Community Compatibility Database
 
-After a successful compression, you can optionally submit your result to the community database.
+After a successful compression, you can optionally submit your results to the community database.
 
-You can also browse and search compatibility reports from inside the app.
+The database allows users to:
 
-The database supports:
+* Share compatibility reports
+* Report Working / Partial / Not Working / Not Tested Yet status
+* Search by game name
+* Search by Title ID
+* View report counts
+* View ShadowMount version information
+* Browse compatibility reports directly from the application
 
-* Working / Partial / Not Working / Not Tested Yet status
-* Searching by game name
-* Searching by Title ID
-* Report counts
-* ShadowMount version info
-* Vote-based results so one bad report does not override everyone else
+Compatibility status is vote-based so one incorrect report cannot override community results.
 
 ---
 
-## Compression Tuning
+## ⚙️ Compression Tuning
 
-You can adjust:
+Advanced users can fine-tune compression using:
 
-* Compression level
-* CPU cores
-* Block size
+* Compression level selection
+* CPU core selection
+* Block size selection
 
-Block size options:
+Available block sizes:
 
 * Auto
 * Auto-Fit
@@ -70,71 +118,96 @@ Block size options:
 * 32768
 * 65536
 
-Smaller block sizes may help with games that have lots of small files.
+Smaller block sizes may improve results for games containing large numbers of small files.
 
 ---
 
-## AMPR / APR Support
+## 🎮 AMPR / APR Support
 
-PS5 FFPFSC PRO can detect games that need the AMPR emulator.
+PS5 FFPFSC PRO can detect games that require the AMPR emulator.
 
-It can detect PlayGo chunk files and includes a dedicated AMPR folder setting in Options.
+Features include:
+
+* Automatic PlayGo chunk detection
+* Dedicated AMPR folder configuration
+* Compatibility reporting support
 
 ---
 
-## Getting Started
+## 🚀 Getting Started
 
 1. Download the latest release.
-2. Run `PS5_FFPFSC_PRO.exe`.
+2. Run `PS5_FFPFSC_PRO.exe`
 3. Add a game folder, archive, `.exfat`, or `.ffpkg` image.
-4. Pick your compression settings.
-5. Click Start.
+4. Select your compression settings.
+5. Click **Start**.
+
+The application handles the rest.
 
 ---
 
-## Common Issues
+## 🛠️ Common Issues
 
 ### Out of Memory
 
-Try lowering CPU cores or using a lower compression level.
+Try:
+
+* Lowering CPU cores
+* Lowering compression level
+* Closing other applications
 
 ### Disk Full
 
-Make sure your Output and Temp folders have enough free space.
+Ensure sufficient free space exists in both:
+
+* Output folder
+* Temporary folder
 
 ### Write Errors
 
-Check that your output drive is writable and supports large files.
+Verify that:
+
+* Output locations are valid
+* Drives are writable
+* Storage devices have enough free space
+
+The application provides detailed error messages and recommended fixes whenever possible.
 
 ---
 
-## Credits
+## 🙏 Credits
 
-Compression backend:
+### Compression Backend
 
 * MkPFS
 * FFPFSC
 * Bizkut
 
-Thanks to everyone testing games, reporting bugs, and submitting compatibility results.
+### Community
+
+Special thanks to everyone testing games, submitting compatibility reports, reporting bugs, and helping improve the project.
 
 ---
 
-## Links
+## 🔗 Links
 
-YouTube: https://youtube.com/@KINGDKAK
+📺 YouTube
+https://youtube.com/@KINGDKAK
 
-Ko-fi: https://ko-fi.com/KINGDKAK
+☕ Ko-fi
+https://ko-fi.com/KINGDKAK
 
+📥 Releases
+https://github.com/KINGDKAK/PS5-FFPFSC-PRO/releases
 
 ---
 
-## Disclaimer
+## ⚠️ Disclaimer
 
 This project is provided as-is.
 
-Only use content you legally own and follow the laws in your region.
+Only use content you legally own and follow all applicable laws in your region.
 
 ---
 
-If the project helps you, consider starring the repo and submitting compatibility results for the community.
+⭐ If you find the project useful, consider starring the repository and contributing compatibility reports to help the community.
