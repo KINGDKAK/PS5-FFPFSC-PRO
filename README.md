@@ -101,6 +101,12 @@ The database allows users to:
 
 Compatibility status is vote-based so one incorrect report cannot override community results.
 
+View the live compatibility database:
+
+https://docs.google.com/spreadsheets/d/1dgu0p7U2yB_mhcUELz-Wkc7Yhs-avoWLY1Gcm0n5XJw/edit?usp=drive_web&ouid=115958744890792485831
+
+Or access it directly from PS5 FFPFSC PRO.
+
 ---
 
 ## ⚙️ Compression Tuning
