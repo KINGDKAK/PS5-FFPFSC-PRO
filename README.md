@@ -126,7 +126,6 @@ YouTube: https://youtube.com/@KINGDKAK
 
 Ko-fi: https://ko-fi.com/KINGDKAK
 
-GitHub: https://github.com/juma-sayeh/PS5-Game-Compressor
 
 ---
 
