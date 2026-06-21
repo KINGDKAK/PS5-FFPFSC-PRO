@@ -59,19 +59,23 @@ Whether you're compressing a single game, batch processing multiple titles, or b
 
 ## ✨ Features
 
-* Compress PS5 game dumps into `.ffpfsc`
-* Supports game folders, `.exfat`, `.ffpkg`, `.zip`, `.rar`, and `.7z`
-* Drag-and-drop support
-* Batch compression
-* Multi-image queueing
-* Compression tuning options
-* Automatic update checker
-* Live RAM meter
-* Detailed logs and progress tracking
-* Per-game output folders
-* Compact mode
-* Community Compatibility Database
-
+Compress PS5 game dumps into .ffpfsc
+Supports game folders, .exfat, .ffpkg, .zip, .rar, and .7z
+Drag-and-drop support
+Batch compression
+Multi-image queueing
+Compression tuning options
+Compression presets (Fast, Balanced, Max Compression, Low RAM)
+Automatic update checker
+Live RAM meter
+Automatic retry on out-of-memory errors
+Detailed logs and progress tracking
+Per-game output folders
+Compact mode
+Interactive feature tour
+What's New dialog after updates
+Community Compatibility Database
+APR / AMPR game support
 ---
 
 ## 📂 Supported Inputs
@@ -98,6 +102,11 @@ The database allows users to:
 * View report counts
 * View ShadowMount version information
 * Browse compatibility reports directly from the application
+* Duplicate submission protection
+* Vote-based reporting system
+* Submit results directly from the application
+* Filter by compatibility status
+* Browse over 5,000+ community compatibility reports
 
 Compatibility status is vote-based so one incorrect report cannot override community results.
 
@@ -127,6 +136,14 @@ Available block sizes:
 
 Smaller block sizes may improve results for games containing large numbers of small files.
 
+Compression Presets
+* 🚀 Fast
+* ⚖️ Balanced
+* 🗜️ Max Compression
+* 💾 Low RAM
+
+Presets automatically configure compression level, CPU cores, and block size.
+
 ---
 
 ## 🎮 AMPR / APR Support
@@ -136,8 +153,37 @@ PS5 FFPFSC PRO can detect games that require the AMPR emulator.
 Features include:
 
 * Automatic PlayGo chunk detection
+* Automatic APR title detection
+* Automatic AMPR index generation
 * Dedicated AMPR folder configuration
 * Compatibility reporting support
+* Batch mode support
+
+---
+
+📊 Monitoring & Automation
+
+
+* Live RAM meter
+* Automatic update checking
+* Windows completion notifications
+* Automatic retry on memory errors
+* Real-time progress tracking
+
+
+---
+
+🎓 User Experience
+
+
+* Interactive feature tour
+* What's New dialog after updates
+* Full Help / FAQ section
+* Detailed logging
+* Resizable log panel
+* Compact mode
+
+
 
 ---
 
@@ -187,7 +233,6 @@ The application provides detailed error messages and recommended fixes whenever 
 ### Compression Backend
 
 * MkPFS
-* FFPFSC
 * Bizkut
 
 ### Community
