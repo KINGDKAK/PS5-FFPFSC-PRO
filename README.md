@@ -1,14 +1,3 @@
-# PS5 FFPFSC PRO
-
-![Platform](https://img.shields.io/badge/platform-Windows-blue)
-![Backend](https://img.shields.io/badge/backend-MkPFS%20%2B%20FFPFSC-orange)
-![Version](https://img.shields.io/badge/version-v1.3.0-green)
-
-PS5 FFPFSC PRO is a Windows GUI for compressing PlayStation 5 game dumps using MkPFS and FFPFSC.
-
-The goal is simple: make PS5 game compression easier without needing command-line tools or complicated setup.
-
----
 
 <h1 align="center">🚀 PS5 FFPFSC PRO</h1>
 
