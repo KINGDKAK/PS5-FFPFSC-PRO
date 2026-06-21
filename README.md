@@ -6,7 +6,9 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Platform-Windows-blue">
+  <img src="https://img.shields.io/badge/Windows-Supported-blue">
+  <img src="https://img.shields.io/badge/Linux-Supported-yellow">
+  <img src="https://img.shields.io/badge/macOS-Supported-lightgrey">
   <img src="https://img.shields.io/badge/Backend-MkPFS%20%2B%20FFPFSC-orange">
   <img src="https://img.shields.io/badge/Version-v1.3.0-green">
 </p>
