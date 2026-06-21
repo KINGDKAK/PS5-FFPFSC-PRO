@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """PS5 FFPFSC PRO — backend wrapper (MkPFS 0.0.8+)"""
+from __future__ import annotations  # makes str|None / list[X] work on Python 3.7+
 import sys
 import os
 
@@ -72,16 +73,25 @@ def find_game_items(path: Path, batch: bool = False) -> list[Path]:
     print(f"[INFO] Scanning for game folder(s) and disk image(s) (.exfat / .ffpkg) in {path}...")
     valid_items: list[Path] = []
 
-    for dirpath, _, filenames in os.walk(path):
+    # Walk the tree once, pruning descent into found game roots so nested
+    # sce_sys/eboot.bin structures inside a game don't produce false duplicates.
+    game_roots: set[Path] = set()
+    for dirpath, subdirs, filenames in os.walk(path):
         curr = Path(dirpath)
+
+        # Skip if we're already inside a found game root
+        if any(curr == r or r in curr.parents for r in game_roots):
+            subdirs.clear()
+            continue
+
         for f in filenames:
             if Path(f).suffix.lower() in _DISK_IMAGE_SUFFIXES:
                 valid_items.append(curr / f)
 
-    for dirpath, _, _ in os.walk(path):
-        curr = Path(dirpath)
         if (curr / "eboot.bin").is_file() and (curr / "sce_sys" / "param.json").is_file():
             valid_items.append(curr)
+            game_roots.add(curr)
+            subdirs.clear()  # don't recurse into the game folder
 
     seen: set[Path] = set()
     deduped: list[Path] = []
@@ -127,18 +137,18 @@ def _mkpfs_error_hint(exc: subprocess.CalledProcessError, output_path: Path) -> 
             f"[ERROR] OUTPUT DRIVE IS {fs_label} — 4 GB per-file limit exceeded.\n"
             f"[ERROR] PS5 .ffpfsc files are almost always larger than 4 GB.\n"
             f"[ERROR] Settings to fix:\n"
-            f"[ERROR]   OUTPUT folder  →  change to an NTFS drive (e.g. C:\\ or D:\\)\n"
-            f"[ERROR]   TEMP folder    →  also move to NTFS if it is on the same drive",
+            f"[ERROR]   OUTPUT folder  ->  change to an NTFS drive (e.g. C:\\ or D:\\)\n"
+            f"[ERROR]   TEMP folder    ->  also move to NTFS if it is on the same drive",
             flush=True,
         )
     else:
         print(
             f"[ERROR] Output path: {output_path}\n"
             f"[ERROR] Settings to check:\n"
-            f"[ERROR]   OUTPUT folder  →  ensure the drive is NTFS (not exFAT/FAT32) with enough space\n"
-            f"[ERROR]   TEMP folder    →  needs ~1.5x the game size of free space during compression\n"
-            f"[ERROR]   CPU cores      →  try lowering to 2 or 1 if RAM could be the cause\n"
-            f"[ERROR]   Level          →  try 5 if the default (7) runs out of memory",
+            f"[ERROR]   OUTPUT folder  ->  ensure the drive is NTFS (not exFAT/FAT32) with enough space\n"
+            f"[ERROR]   TEMP folder    ->  needs ~1.5x the game size of free space during compression\n"
+            f"[ERROR]   CPU cores      ->  try lowering to 2 or 1 if RAM could be the cause\n"
+            f"[ERROR]   Level          ->  try 5 if the default (7) runs out of memory",
             flush=True,
         )
 
@@ -459,14 +469,14 @@ def main() -> None:
                         sys.exit(1)
 
             if item.is_file() and item.suffix.lower() in ('.exfat', '.ffpkg'):
-                # Direct disk image (.exfat / .ffpkg) → .ffpfsc (single-file streaming path)
+                # Direct disk image (.exfat / .ffpkg) -> .ffpfsc (single-file streaming path)
                 compress_file_to_ffpfsc(
                     item, current_ffpfs_path, mkpfs_cmd_base, mkpfs_cwd,
                     temp_folder=user_temp,
                     **pack_kwargs,
                 )
             else:
-                # Game folder: pack uncompressed PFS, then compress → .ffpfsc
+                # Game folder: pack uncompressed PFS, then compress -> .ffpfsc
                 with tempfile.TemporaryDirectory(dir=user_temp) as temp_dir:
                     temp_pfs = Path(temp_dir) / "pfs_image.dat"
 

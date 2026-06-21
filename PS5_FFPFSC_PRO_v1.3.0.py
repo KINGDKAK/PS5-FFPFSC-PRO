@@ -20,6 +20,16 @@ try:
 except ImportError:
     raise SystemExit("Missing customtkinter. Run: py -m pip install customtkinter")
 
+# CTkButton.destroy() references self._font which is never set when __init__ raises
+# mid-way (bad color arg) or due to Python 3.14 / CTk 5.2.2 incompatibility.
+# Patch it globally so any missing _font is treated as None (no callback to remove).
+_orig_ctk_btn_destroy = ctk.CTkButton.destroy
+def _safe_ctk_btn_destroy(self):
+    if not hasattr(self, "_font"):
+        self._font = None
+    _orig_ctk_btn_destroy(self)
+ctk.CTkButton.destroy = _safe_ctk_btn_destroy
+
 try:
     from PIL import Image, ImageTk
 except Exception:
@@ -40,7 +50,7 @@ except Exception:
     _HAS_DND = False
 
 APP_NAME = "PS5 FFPFSC PRO"
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.3.0"
 BACKEND_NAME = "bizkut/ps5-ffpfs-cli"
 MKPFS_NAME    = "MkPFS"
 MKPFS_VERSION = "0.0.8"
@@ -51,9 +61,17 @@ FINAL_REPORT_FILE = APP_DIR / "last_result_report.txt"
 HISTORY_FILE = APP_DIR / "history.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
 COMPAT_FILE = APP_DIR / "compatibility.json"
+GITHUB_REPO         = "KINGDKAK/PS5-FFPFSC-PRO"
+GITHUB_API_LATEST   = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
+
 COMMUNITY_URL = (
     "https://script.google.com/macros/s/"
-    "AKfycbzUxOxhfNi3cGs2cP1tlX1etWbj62neOuS_mOOnL8ipPaBhNH_weoIJPPiF-wCIBkOH/exec"
+    "AKfycbzPAg4-N2RFBel9oRfyxdBhCH4OylrkpHrOBfPcn31CV1l4PMRaKEwDWztdrDH2p4pM/exec"
+)
+# Public Google Sheet URL (view-only link for browser)
+COMMUNITY_SHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/1dgu0p7U2yB_mhcUELz-Wkc7Yhs-avoWLY1Gcm0n5XJw/edit"
 )
 
 TITLE_RE = re.compile(r"\b(PPSA\d{5}|CUSA\d{5})\b", re.I)
@@ -676,22 +694,24 @@ class ErrorDialog(ctk.CTkToplevel):
             "• External drive disconnected or write-protected",
             "• Temp folder unavailable or permissions issue",
             "• MkPFS backend failure (corrupted dump or unsupported format)",
+            "• Wrong or missing archive password — enter it in the password field before starting",
             "• Python not found or wrong version",
             "• Antivirus blocking backend process",
         ]:
             ctk.CTkLabel(causes, text=cause, text_color=MUTED, anchor="w").pack(anchor="w", padx=24, pady=1)
         ctk.CTkFrame(causes, height=8, fg_color=PANEL).pack()
 
+        # Buttons anchored to bottom before the expanding log box
+        btns = ctk.CTkFrame(self, fg_color=BLACK)
+        btns.pack(side="bottom", fill="x", padx=20, pady=(4, 16))
+
         ctk.CTkLabel(self, text="Last 50 Log Lines:", text_color=WHITE,
                       font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=20, pady=(0, 4))
         box = ctk.CTkTextbox(self, fg_color=BLACK, text_color=("#1a7a40", "#4ade80"), border_width=1, border_color=BORDER,
                               font=ctk.CTkFont(family="Consolas", size=11), height=160, wrap="none")
-        box.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        box.pack(fill="both", expand=True, padx=20, pady=(0, 4))
         box.insert("end", self._log or "(No log available)")
         box.configure(state="disabled")
-
-        btns = ctk.CTkFrame(self, fg_color=BLACK)
-        btns.pack(fill="x", padx=20, pady=(0, 16))
         ctk.CTkButton(btns, text="Copy Error", width=140, fg_color=CARD2, text_color=WHITE,
                        hover_color=("#b0b0b0", "#2a2a2a"), command=self._copy).pack(side="left", padx=(0, 8))
         ctk.CTkButton(btns, text="Export Raw Log", width=140, fg_color=CARD2, text_color=WHITE,
@@ -1037,8 +1057,9 @@ class SettingsWindow(ctk.CTkToplevel):
         fold.pack(fill="x", pady=(4, 12))
         fold.grid_columnconfigure(1, weight=1)
         for row_i, (lbl, var, key, title) in enumerate([
-            ("Default Output Folder", self.app.output_var, "output_folder", "Select Output Folder"),
-            ("Default Temp Folder",   self.app.temp_var,   "temp_folder",   "Select Temp Folder"),
+            ("Default Output Folder", self.app.output_var,   "output_folder", "Select Output Folder"),
+            ("Default Temp Folder",   self.app.temp_var,     "temp_folder",   "Select Temp Folder"),
+            ("AMPR Emu Folder",       self.app.ampr_var,     "ampr_folder",   "Select AMPR Emu Folder"),
         ]):
             ctk.CTkLabel(fold, text=lbl + ":", text_color=MUTED, anchor="w", width=170).grid(
                 row=row_i, column=0, padx=14, pady=8, sticky="w")
@@ -1057,6 +1078,7 @@ class SettingsWindow(ctk.CTkToplevel):
             ("Keep intermediate PFS image",           self.app.keep_pfs_var,        None),
             ("Verify output (slower, uses more RAM)", self.app.verify_output_var,    None),
             ("Auto-clear temp folder after success",  self.app.auto_clear_temp_var,  "auto_clear_temp"),
+            ("Per-game output subfolder (output/GameName/)", self.app.per_game_folder_var, "per_game_folder"),
             ("Verbose mkpfs output (debug)",          self.app.verbose_var,           None),
         ]:
             cb = ctk.CTkCheckBox(comp, text=text, variable=var, fg_color=GREEN,
@@ -1157,6 +1179,27 @@ class SettingsWindow(ctk.CTkToplevel):
         ]:
             ctk.CTkLabel(about, text=line, text_color=MUTED, anchor="w",
                           font=ctk.CTkFont(family="Consolas", size=11)).pack(anchor="w", padx=14, pady=3)
+
+        _about_btns = ctk.CTkFrame(about, fg_color="transparent")
+        _about_btns.pack(anchor="w", padx=10, pady=(4, 4))
+        ctk.CTkButton(_about_btns, text="📋  View Changelog", fg_color=CARD2, text_color=WHITE,
+                       hover_color=("#b0b0b0", "#2a2a2a"),
+                       command=self.app._show_changelog).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(_about_btns, text="🔄  Check for Updates", fg_color=CARD2, text_color=WHITE,
+                       hover_color=("#b0b0b0", "#2a2a2a"),
+                       command=lambda: self.app._check_for_updates(silent=False)).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(_about_btns, text="☕  Support on Ko-fi", fg_color=("#e74c3c", "#c0392b"),
+                       text_color=WHITE, hover_color=("#c0392b", "#922b21"),
+                       command=lambda: open_path("https://ko-fi.com/kingdkak")).pack(side="left")
+
+        _tour_btns = ctk.CTkFrame(about, fg_color="transparent")
+        _tour_btns.pack(anchor="w", padx=10, pady=(0, 10))
+        ctk.CTkButton(_tour_btns, text="What's New in v" + APP_VERSION, fg_color=CARD2,
+                       text_color=WHITE, hover_color=("#b0b0b0", "#2a2a2a"),
+                       command=lambda: self.app._show_whats_new(force=True)).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(_tour_btns, text="Take a Feature Tour", fg_color=CARD2,
+                       text_color=WHITE, hover_color=("#b0b0b0", "#2a2a2a"),
+                       command=lambda: self.app._start_feature_tour()).pack(side="left")
 
         # Bottom buttons
         btns = ctk.CTkFrame(self, fg_color=BLACK)
@@ -1435,7 +1478,19 @@ class ArchiveExtractor:
 
 # ─── Game Item ─────────────────────────────────────────────────────────────────
 
+AMPR_SPRX_FILES = ["libSceAmpr.sprx", "libScePlayGo.sprx"]
+
+def is_apr_game(path: Path) -> bool:
+    """Return True if the game folder contains a PlayGo chunk file (APR title indicator)."""
+    if path is None or not path.is_dir():
+        return False
+    sce_sys = path / "sce_sys"
+    return (sce_sys / "playgo-chunk.dat").exists() or (sce_sys / "playgo_chunk.dat").exists()
+
+
 class GameItem:
+    ampr_emu: bool = False  # class-level default — guards against history items missing this attr
+
     def __init__(self, path: Path):
         self.path       = path
         self.archive_path: Path | None = None   # set for archive placeholders
@@ -1445,6 +1500,7 @@ class GameItem:
         self.files      = file_count(path)
         self.artwork    = find_artwork(path)
         self.status     = "Queued"
+        self.ampr_emu   = is_apr_game(path)     # auto-detected; user can override via checkbox
 
     @classmethod
     def from_archive(cls, archive: Path) -> "GameItem":
@@ -1472,6 +1528,7 @@ class GameItem:
         obj.files        = 1
         obj.artwork      = None
         obj.status       = "Queued"
+        obj.ampr_emu     = False               # disk images don't support AMPR injection
         return obj
 
 
@@ -1479,12 +1536,12 @@ class GameItem:
 
 class CLIWorker(threading.Thread):
     WEIGHTS = {
-        "Scanning Files":      (0,    8),
-        "Reading Game":        (8,   18),
-        "Creating Temp PFS":   (18,  40),
-        "Compressing":         (40,  80),
-        "Writing Final Image": (80,  93),
-        "Verifying Output":    (93,  97),
+        "Scanning Files":      (0,    5),
+        "Reading Game":        (5,   15),
+        "Creating Temp PFS":   (15,  38),
+        "Verifying Output":    (38,  48),   # verify of the temp PFS image
+        "Compressing":         (48,  88),   # outer MkPFS container compression (the big step)
+        "Writing Final Image": (88,  97),   # streaming .ffpfsc write
         "Cleaning Up":         (97, 100),
         "Complete":            (100, 100),
     }
@@ -1683,16 +1740,22 @@ class CLIWorker(threading.Thread):
         # Use the FIRST WORD of the label for reliable matching regardless of trailing speed/ETA.
         first_word = label.strip().lower().split()[0] if label.strip() else ""
 
-        # ── Final output ──────────────────────────────────────────────────────
-        # Check before generic "write" so ".ffpfsc" always wins
+        # ── Outer MkPFS container compression (check BEFORE .ffpfsc so it wins) ─
+        # e.g. "Compressing pfs_image.dat to outer container PPSA20396.ffpfsc using MkPFS"
+        if "outer container" in text or (first_word in ("compress", "compressing") and "mkpfs" in text.lower()):
+            return "Compressing"
+
+        # ── Final output write ────────────────────────────────────────────────
+        # ".ffpfsc" in text covers both the streaming write and any info lines.
         if ".ffpfsc" in text or "final image" in text or "final output" in text:
             return "Writing Final Image"
 
         # ── Backend label "write" ─────────────────────────────────────────────
-        # Emitted during temp-PFS construction (before compress) AND final image write (after).
-        # Distinguish by whether compression has started yet.
+        # Emitted during temp-PFS construction AND final image write.
+        # After verify is done (new stage order), any "write" must be the final image.
         if first_word in ("write", "writing"):
-            if self.stage_progress.get("Compressing", 0) > 0:
+            if (self.stage_progress.get("Verifying Output", 0) >= 100
+                    or self.stage_progress.get("Compressing", 0) > 0):
                 return "Writing Final Image"
             else:
                 return "Creating Temp PFS"
@@ -1705,7 +1768,7 @@ class CLIWorker(threading.Thread):
         if first_word in ("read", "reading"):
             return "Reading Game"
 
-        # ── Compression ───────────────────────────────────────────────────────
+        # ── Outer compression (generic — "Compressing N files") ──────────────
         if first_word in ("compress", "compressing") or "compress" in text:
             return "Compressing"
 
@@ -1737,7 +1800,7 @@ class CLIWorker(threading.Thread):
     # the module (after CLIWorker), so we can't reference it at class-body time.
     _STAGE_ORDER = [
         "Scanning Files", "Reading Game", "Creating Temp PFS",
-        "Compressing", "Writing Final Image", "Verifying Output",
+        "Verifying Output", "Compressing", "Writing Final Image",
         "Cleaning Up", "Complete",
     ]
 
@@ -1756,18 +1819,21 @@ class CLIWorker(threading.Thread):
         # When a later stage begins, snap earlier stages to 100% so the
         # breadcrumbs never show a stale partial % (e.g. "Temp PFS 5%").
         # This handles backends that stop emitting progress before 100%.
-        if stage == "Compressing":
+        if stage == "Verifying Output":
             self.stage_progress["Creating Temp PFS"] = 100
             self.stage_progress["Reading Game"]       = 100
+            self.stage_progress["Scanning Files"]     = 100
+        elif stage == "Compressing":
+            self.stage_progress["Verifying Output"]   = 100
+            self.stage_progress["Creating Temp PFS"]  = 100
+            self.stage_progress["Reading Game"]        = 100
         elif stage == "Writing Final Image":
-            self.stage_progress["Creating Temp PFS"] = 100
             self.stage_progress["Compressing"]        = 100
-        elif stage == "Verifying Output":
-            self.stage_progress["Writing Final Image"] = 100
-            self.stage_progress["Compressing"]         = 100
+            self.stage_progress["Verifying Output"]   = 100
+            self.stage_progress["Creating Temp PFS"]  = 100
         elif stage in ("Cleaning Up", "Complete"):
             for s in ("Scanning Files", "Reading Game", "Creating Temp PFS",
-                      "Compressing", "Writing Final Image"):
+                      "Verifying Output", "Compressing", "Writing Final Image"):
                 if self.stage_progress.get(s, 0) > 0:
                     self.stage_progress[s] = 100
 
@@ -1836,11 +1902,14 @@ class CLIWorker(threading.Thread):
                     "    mkpfs spawns one worker process per CPU core. Each worker holds\n"
                     "    compressed data in RAM. Too many cores = not enough memory.\n"
                     "\n"
-                    "  ╔═ Try these settings (Compression Tuning bar): ══════════════╗\n"
-                    "  ║  CPU cores  →  set to 2 (or 1 for very large games)         ║\n"
-                    "  ║  Level      →  try 5 instead of 7 (less RAM per worker)     ║\n"
-                    "  ║  Block size →  try 16384 or 32768 (smaller per-block buffers) ║\n"
-                    "  ╚═══════════════════════════════════════════════════════════════╝"
+                    "  ╔═ Try these in order: ════════════════════════════════════════════╗\n"
+                    "  ║  1. Verify Output    ->  make sure it is UNCHECKED (Options)     ║\n"
+                    "  ║  2. CPU cores        ->  set to 2, or 1 for very large games     ║\n"
+                    "  ║  3. Level            ->  try 5 instead of 7 (less RAM per worker)║\n"
+                    "  ║  4. Block size       ->  try 16384 or 32768                      ║\n"
+                    "  ║  5. Close other apps ->  free up as much RAM as possible         ║\n"
+                    "  ╚══════════════════════════════════════════════════════════════════╝\n"
+                    "  The app will auto-retry with one fewer CPU core."
                 )
             return
 
@@ -2143,6 +2212,14 @@ class App:
         # After the UI is fully loaded, remind user to report any untested games
         self.root.after(4000, self._check_pending_compat_reports)
 
+        # Warn if saved folder paths were cleared because they no longer exist
+        if getattr(self, "_stale_paths", []):
+            self.root.after(800, self._warn_stale_paths)
+
+        # Silent update check on startup — only shows dialog if a newer version exists
+        self.root.after(600,  self._show_whats_new)
+        self.root.after(3000, lambda: self._check_for_updates(silent=True))
+
     def _setup(self):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("green")
@@ -2151,8 +2228,27 @@ class App:
         self.root.minsize(1100, 760)
 
         settings = load_settings()
-        self._saved_output = settings.get("output_folder", "")
-        self._saved_temp = settings.get("temp_folder", "")
+
+        # Validate saved folder paths — clear any that no longer exist so the
+        # app doesn't crash or silently write to a stale/missing drive.
+        def _valid_folder(p: str) -> str:
+            from pathlib import Path as _P
+            return p if p and _P(p).exists() else ""
+
+        self._saved_output = _valid_folder(settings.get("output_folder", ""))
+        self._saved_temp   = _valid_folder(settings.get("temp_folder", ""))
+
+        # Warn the user if a saved path was cleared
+        self._stale_paths: list[str] = []
+        if settings.get("output_folder") and not self._saved_output:
+            self._stale_paths.append(f"Output folder: {settings['output_folder']}")
+        if settings.get("temp_folder") and not self._saved_temp:
+            self._stale_paths.append(f"Temp folder:   {settings['temp_folder']}")
+
+        self._community_entries: list[dict] = []   # cached community list from last fetch
+        self._ampr_dialog_shown = False            # reset each time user clicks Start
+        self._saved_ampr_folder     = settings.get("ampr_folder", "")
+        self._saved_per_game_folder = settings.get("per_game_folder", False)
         self._saved_auto_clear_temp = settings.get("auto_clear_temp", False)
         self._saved_compression_level = settings.get("compression_level", 7)
         self._saved_cpu_count = settings.get("cpu_count", 0)
@@ -2217,12 +2313,16 @@ class App:
         self.cancel_btn.configure(state="disabled")
 
         self._button(header, "☀ Light / 🌙 Dark", self._toggle_theme, width=150).grid(row=1, column=2, padx=12, sticky="e")
-        self._button(header, "⚙  Settings", self.open_settings, width=120).grid(row=1, column=3, columnspan=2, padx=(0, 4), sticky="e")
+        self._compact_btn = self._button(header, "⊡  Compact", self._toggle_compact, width=90)
+        self._compact_btn.grid(row=1, column=3, padx=(0, 4), sticky="e")
+        self._settings_btn = self._button(header, "⚙  Settings", self.open_settings, width=110)
+        self._settings_btn.grid(row=1, column=4, padx=(0, 4), sticky="e")
 
         # ── Variables ────────────────────────────────────────────────────────
         self.source_var = tk.StringVar()
         self.output_var = tk.StringVar(value=self._saved_output)
-        self.temp_var = tk.StringVar(value=self._saved_temp)
+        self.temp_var   = tk.StringVar(value=self._saved_temp)
+        self.ampr_var   = tk.StringVar(value=self._saved_ampr_folder)
         self.password_var = tk.StringVar()
         self.keep_pfs_var = tk.BooleanVar(value=False)
         self.open_output_var = tk.BooleanVar(value=False)
@@ -2231,12 +2331,14 @@ class App:
         self.sound_error_var = tk.BooleanVar(value=True)
         self.batch_var = tk.BooleanVar(value=False)
         self.verify_output_var = tk.BooleanVar(value=False)
-        self.auto_clear_temp_var = tk.BooleanVar(value=self._saved_auto_clear_temp)
+        self.auto_clear_temp_var  = tk.BooleanVar(value=self._saved_auto_clear_temp)
+        self.per_game_folder_var  = tk.BooleanVar(value=self._saved_per_game_folder)
         # MkPFS 0.0.8 tuning
         self.compression_level_var = tk.IntVar(value=self._saved_compression_level)
         self.cpu_count_var         = tk.IntVar(value=self._saved_cpu_count)
         self.verbose_var           = tk.BooleanVar(value=False)
         self.block_size_var        = tk.StringVar(value=self._saved_block_size)
+        self._compact_mode         = False
 
         # ── Top folder row ───────────────────────────────────────────────────
         top = self.panel(main, row=1, column=0, sticky="ew", padx=18, pady=8)
@@ -2364,10 +2466,25 @@ class App:
                       text_color=MUTED, font=ctk.CTkFont(size=11),
                       justify="left"
                      ).grid(row=7, column=0, sticky="w", padx=14, pady=(0, 2))
-        ctk.CTkEntry(left, textvariable=self.password_var,
+        _pw_entry = ctk.CTkEntry(left, textvariable=self.password_var,
                       placeholder_text="Archive password (if required)",
                       show="*", fg_color=CARD, border_color=BORDER2,
-                      text_color=WHITE).grid(row=8, column=0, sticky="ew", padx=14, pady=(0, 4))
+                      text_color=WHITE)
+        _pw_entry.grid(row=8, column=0, sticky="ew", padx=14, pady=(0, 4))
+        def _pw_right_click(event):
+            import tkinter.font as _tkfont
+            _mf = _tkfont.Font(family="Segoe UI", size=14)
+            m = tk.Menu(_pw_entry, tearoff=0, font=_mf)
+            m.add_command(label="    Paste",       command=lambda: (
+                _pw_entry.focus_set(),
+                _pw_entry._entry.event_generate("<<Paste>>")
+            ))
+            m.add_command(label="    Cut",         command=lambda: _pw_entry._entry.event_generate("<<Cut>>"))
+            m.add_command(label="    Copy",        command=lambda: _pw_entry._entry.event_generate("<<Copy>>"))
+            m.add_separator()
+            m.add_command(label="    Select All",  command=lambda: _pw_entry._entry.event_generate("<<SelectAll>>"))
+            m.tk_popup(event.x_root, event.y_root)
+        _pw_entry.bind("<Button-3>", _pw_right_click)
 
         # ── row 9: Options ────────────────────────────────────────────────────
         ctk.CTkLabel(left, text="OPTIONS", font=ctk.CTkFont(size=16, weight="bold"),
@@ -2450,8 +2567,6 @@ class App:
         ctk.CTkLabel(sm_bar,
                       text=(
                           "1.   Copy the .ffpfsc file to your PS5 internal storage or an external USB drive.\n"
-                          "1a.  If you already have a shortcut for this game on the XMB, delete it first — "
-                          "the old entry causes a param error and the game won't appear.\n"
                           "2.   Open ShadowMount on your PS5 and let it scan. "
                           "If the game is not detected or the shortcut is not made, re-run ShadowMount.\n"
                           "3.   Select the game from the XMB and launch it — it will appear and run like a standard title."
@@ -2522,6 +2637,32 @@ class App:
         )
         _block_menu.grid(row=1, column=7, sticky="w", padx=(0, 10), pady=(0, 8))
 
+        # ── Preset profiles ──
+        ctk.CTkLabel(tune_bar, text="Presets:", text_color=MUTED,
+                      font=ctk.CTkFont(size=11), anchor="e").grid(
+            row=2, column=0, sticky="e", padx=(10, 6), pady=(0, 8))
+        _preset_frame = ctk.CTkFrame(tune_bar, fg_color="transparent")
+        _preset_frame.grid(row=2, column=1, columnspan=7, sticky="w", pady=(0, 8))
+
+        def _apply_preset(level, cpu, block):
+            self.compression_level_var.set(level)
+            self.cpu_count_var.set(cpu)
+            self.block_size_var.set(block)
+            save_settings({"compression_level": level, "cpu_count": cpu, "block_size": block})
+
+        for label, tip, args in [
+            ("Fast",         "Level 3, auto cores, auto block",       (3,  0, "auto")),
+            ("Balanced",     "Level 5, auto cores, auto block",       (5,  0, "auto")),
+            ("Max",          "Level 9, auto cores, auto block",       (9,  0, "auto")),
+            ("Low RAM",      "Level 5, 1 core, 16384 block",         (5,  1, "16384")),
+        ]:
+            btn = ctk.CTkButton(_preset_frame, text=label, width=80, height=22,
+                                  fg_color=CARD2, hover_color=GREEN2, text_color=WHITE,
+                                  font=ctk.CTkFont(size=11),
+                                  command=lambda a=args: _apply_preset(*a))
+            btn.pack(side="left", padx=(0, 6))
+            btn._ctk_tooltip = tip  # stored for potential future tooltip
+
         # ── Right: Game Details + Command Preview ────────────────────────────
         right = ctk.CTkFrame(content, fg_color=BLACK)
         right.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
@@ -2555,6 +2696,10 @@ class App:
             ctk.CTkLabel(info, textvariable=v, text_color=WHITE, anchor="w", justify="left",
                           font=ctk.CTkFont(size=11)).pack(anchor="w", pady=2, padx=6)
 
+        self._ampr_status_var = tk.StringVar(value="")
+        ctk.CTkLabel(info, textvariable=self._ampr_status_var, text_color=GREEN,
+                      font=ctk.CTkFont(size=11), anchor="w").pack(anchor="w", pady=(2, 0), padx=6)
+
         command = self.panel(right, row=1, column=0, sticky="nsew", pady=(0, 0))
         command.grid_columnconfigure(0, weight=1)
         command.grid_rowconfigure(1, weight=1)
@@ -2585,6 +2730,7 @@ class App:
         self.bottom_tabs.add("Recent Compressions")
         self.bottom_tabs.add("Statistics")
         self.bottom_tabs.add("Compatibility")
+        self.bottom_tabs.add("Help / FAQ")
 
         # ── Status & Stats tab — 3 columns side by side ──────────────────────
         ss_tab = self.bottom_tabs.tab("Status & Stats")
@@ -2642,11 +2788,38 @@ class App:
         log_head.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(log_head, text="LOGS", text_color=WHITE,
                       font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
-        self._button(log_head, "CLEAR LOGS", self.clear_logs, width=110).grid(row=0, column=1, padx=4)
+        self.ram_var = tk.StringVar(value="RAM: —")
+        self._ram_label = ctk.CTkLabel(log_head, textvariable=self.ram_var, text_color=MUTED,
+                                        font=ctk.CTkFont(size=11))
+        self._ram_label.grid(row=0, column=1, padx=(0, 8))
+        self._button(log_head, "CLEAR LOGS", self.clear_logs, width=110).grid(row=0, column=2, padx=4)
         self.log_box = ctk.CTkTextbox(log_tab, fg_color=BLACK, border_width=1, border_color=BORDER,
                                        text_color="#94a3b8", font=ctk.CTkFont(family="Consolas", size=12), wrap="none")
         self.log_box.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
         log_tab.grid_rowconfigure(1, weight=1)
+        self._log_follow = True   # auto-scroll flag
+
+        def _log_check_pos(event=None):
+            """After any scroll, check whether we're at the bottom to resume following."""
+            def _after():
+                try:
+                    _, bot = self.log_box._textbox.yview()
+                except Exception:
+                    try:
+                        _, bot = self.log_box.yview()
+                    except Exception:
+                        return
+                self._log_follow = (bot >= 0.97)
+            self.root.after(80, _after)
+
+        try:
+            _inner = self.log_box._textbox
+            _inner.bind("<MouseWheel>", _log_check_pos, add="+")
+            _inner.bind("<Button-4>",   _log_check_pos, add="+")
+            _inner.bind("<Button-5>",   _log_check_pos, add="+")
+        except Exception:
+            pass
+
         # Per-level colour tags on the underlying tk.Text widget
         try:
             t = self.log_box._textbox
@@ -2774,28 +2947,181 @@ class App:
         self._button(btn_row, "⟳  Auto-fill from last game", self._compat_autofill
                      ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        # ── Right: compatibility list ─────────────────────────────────────────
+        # ── Right: community compatibility list ───────────────────────────────
         list_frame = ctk.CTkFrame(compat_tab, fg_color=PANEL, border_width=1,
                                    border_color=BORDER, corner_radius=10)
         list_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=4)
         list_frame.grid_columnconfigure(0, weight=1)
-        list_frame.grid_rowconfigure(1, weight=1)
+        list_frame.grid_rowconfigure(2, weight=1)
 
         list_head = ctk.CTkFrame(list_frame, fg_color="transparent")
         list_head.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 4))
         list_head.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(list_head, text="COMPATIBILITY LIST", text_color=WHITE,
-                      font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, sticky="w")
+
+        _lh_title = ctk.CTkFrame(list_head, fg_color="transparent")
+        _lh_title.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(_lh_title, text="COMMUNITY LIST", text_color=WHITE,
+                      font=ctk.CTkFont(size=13, weight="bold")).pack(side="left")
+        self._compat_count_var = tk.StringVar(value="")
+        ctk.CTkLabel(_lh_title, textvariable=self._compat_count_var,
+                      text_color=MUTED, font=ctk.CTkFont(size=11)).pack(side="left", padx=(8, 0))
+
         hbtn = ctk.CTkFrame(list_head, fg_color="transparent")
-        hbtn.grid(row=0, column=1)
-        self._button(hbtn, "⟳ Refresh", self.refresh_compat_list, width=80).pack(side="left", padx=(0, 4))
-        self._button(hbtn, "CSV Export", self.export_compat_csv,   width=90).pack(side="left")
+        hbtn.pack(side="right")
+        self._button(hbtn, "☁ Fetch Online", self.fetch_community_list, green=True, width=110).pack(side="left", padx=(0, 4))
+        self._button(hbtn, "⟳ Local", self.refresh_compat_list, width=70).pack(side="left", padx=(0, 4))
+        self._button(hbtn, "CSV", self.export_compat_csv, width=60).pack(side="left", padx=(0, 4))
+        self._button(hbtn, "🌐 Sheet", lambda: __import__("webbrowser").open(COMMUNITY_SHEET_URL), width=70).pack(side="left")
+
+        # Search + filter bar
+        search_bar = ctk.CTkFrame(list_frame, fg_color="transparent")
+        search_bar.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
+        search_bar.grid_columnconfigure(0, weight=1)
+        self._compat_search_var = tk.StringVar()
+        self._compat_filter_var = tk.StringVar(value="All")
+        ctk.CTkEntry(search_bar, textvariable=self._compat_search_var,
+                      placeholder_text="Search by game name or Title ID...",
+                      fg_color=CARD, border_color=BORDER2, text_color=WHITE,
+                      font=ctk.CTkFont(size=11)).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ctk.CTkOptionMenu(search_bar, variable=self._compat_filter_var,
+                           values=["All", "Working", "Partial", "Not Working", "Not Tested Yet"],
+                           fg_color=CARD2, button_color=GREEN, button_hover_color=GREEN2,
+                           text_color=WHITE, dropdown_fg_color=CARD2,
+                           dropdown_text_color=WHITE, dropdown_hover_color=GREEN,
+                           width=130, font=ctk.CTkFont(size=11),
+                           command=lambda _: self._apply_compat_filter()).grid(row=0, column=1)
+        self._compat_search_var.trace_add("write", lambda *_: self._apply_compat_filter())
 
         self.compat_box = ctk.CTkTextbox(list_frame, fg_color=BLACK, border_width=1, border_color=BORDER,
                                           text_color=WHITE, font=ctk.CTkFont(family="Consolas", size=11),
                                           wrap="word", state="disabled")
-        self.compat_box.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        self.compat_box.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 12))
+
+        # Tag colours for status
+        try:
+            _cb = self.compat_box._textbox
+            _cb.tag_configure("Working",        foreground="#4ade80")
+            _cb.tag_configure("Partial",        foreground="#fbbf24")
+            _cb.tag_configure("Not Working",    foreground="#f87171")
+            _cb.tag_configure("Not Tested Yet", foreground="#64748b")
+            _cb.tag_configure("header",         foreground="#94a3b8")
+            _cb.tag_configure("title",          foreground="#e2e8f0")
+            _cb.tag_configure("tid",            foreground="#60a5fa")
+        except Exception:
+            pass
+
+        self._community_entries: list[dict] = []   # cached from last fetch
         self.refresh_compat_list()
+
+        # ── Help / FAQ tab ────────────────────────────────────────────────────
+        help_tab = self.bottom_tabs.tab("Help / FAQ")
+        help_tab.grid_columnconfigure(0, weight=1)
+        help_tab.grid_rowconfigure(1, weight=1)
+
+        # Fixed header — always visible regardless of scroll position
+        help_header = ctk.CTkFrame(help_tab, fg_color=PANEL, corner_radius=0)
+        help_header.grid(row=0, column=0, sticky="ew")
+        help_header.grid_columnconfigure(0, weight=1)
+
+        yt_row = ctk.CTkFrame(help_header, fg_color="transparent")
+        yt_row.pack(fill="x", padx=14, pady=(8, 4))
+        ctk.CTkLabel(yt_row, text="Video Guide by KINGDKAK:", text_color=WHITE,
+                      font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", padx=(0, 12))
+        self._button(yt_row, "▶  Watch on YouTube", lambda: __import__("webbrowser").open(
+            "https://www.youtube.com/@KINGDKAK"), green=True, width=200, height=32).pack(side="left")
+
+        tour_row = ctk.CTkFrame(help_header, fg_color="transparent")
+        tour_row.pack(fill="x", padx=14, pady=(0, 8))
+        self._button(tour_row, "What's New in v" + APP_VERSION,
+                     lambda: self._show_whats_new(force=True),
+                     width=210, height=32).pack(side="left", padx=(0, 8))
+        self._button(tour_row, "Take a Feature Tour",
+                     lambda: self._start_feature_tour(),
+                     width=190, height=32).pack(side="left")
+
+        # Scrollable FAQ content below the fixed header
+        help_scroll = ctk.CTkScrollableFrame(help_tab, fg_color=BLACK)
+        help_scroll.grid(row=1, column=0, sticky="nsew")
+        help_scroll.grid_columnconfigure(0, weight=1)
+
+        def _faq_section(title, body):
+            ctk.CTkLabel(help_scroll, text=title, text_color=GREEN,
+                          font=ctk.CTkFont(size=13, weight="bold"),
+                          anchor="w").pack(fill="x", padx=14, pady=(12, 2))
+            ctk.CTkLabel(help_scroll, text=body, text_color=WHITE,
+                          font=ctk.CTkFont(family="Consolas", size=11),
+                          justify="left", anchor="w", wraplength=900).pack(fill="x", padx=24, pady=(0, 4))
+
+        _faq_section(
+            "Q: The app crashes or freezes during compression — what do I do?",
+            "A: You're running out of RAM. mkpfs spawns one worker per CPU core, each holding\n"
+            "   compressed data in memory. Fix:\n"
+            "   1. Lower CPU cores in Compression Tuning (try 2 or 1)\n"
+            "   2. Lower Level to 5 (uses less RAM per worker)\n"
+            "   3. Try Block size 16384 or 32768\n"
+            "   Games over 30 GB are automatically capped at 2 workers."
+        )
+        _faq_section(
+            "Q: 'Multiple game folders found' error — what does that mean?",
+            "A: The folder you selected contains more than one PS5 game.\n"
+            "   Either select the specific game folder directly, or enable Batch Mode\n"
+            "   to compress all games in the folder one by one."
+        )
+        _faq_section(
+            "Q: My .exfat or .ffpkg file isn't being detected.",
+            "A: Make sure you're on v1.3+. Drag the file directly onto the app window\n"
+            "   or use the FOLDER button and select the file. Only .exfat and .ffpkg\n"
+            "   disk images are supported — not raw ISO or other formats."
+        )
+        _faq_section(
+            "Q: The output .ffpfsc file is over 4 GB and won't copy to my drive.",
+            "A: Your OUTPUT or TEMP folder is on an exFAT drive, which has a 4 GB per-file limit.\n"
+            "   Move the Output and Temp folders to an NTFS drive (e.g. C:\\ or D:\\)."
+        )
+        _faq_section(
+            "Q: Compression is very slow — how do I speed it up?",
+            "A: Lower the Level (try 3–5 instead of 7). Higher level = smaller file but much slower.\n"
+            "   More CPU cores also helps — set to 0 (auto) to use all cores."
+        )
+        _faq_section(
+            "Q: 'ModuleNotFoundError: No module named cryptography'",
+            "A: Run RUN.bat — it installs all required dependencies including cryptography.\n"
+            "   If you're running the .py directly: pip install cryptography"
+        )
+        _faq_section(
+            "Q: What are the Compression Tuning settings?",
+            "   Level (0-9)    — compression strength. 7 is default. Higher = smaller file, more RAM/time.\n"
+            "   CPU cores      — workers (0 = auto). Lower to reduce RAM usage.\n"
+            "   Block size     — internal chunk size. auto is fine. 16384 uses less RAM per chunk.\n"
+            "   Verify Output  — re-reads the file after compression to check for errors. Slow, uses more RAM."
+        )
+        _faq_section(
+            "Q: How do I get the compressed file onto my PS5?",
+            "A: Use ShadowMount to mount the .ffpfsc file on your PS5.\n"
+            "   See the full guide on the GitHub page or in the YouTube video above."
+        )
+        _faq_section(
+            "Q: Can I compress multiple games at once?",
+            "A: Yes — add multiple games to the queue and press START QUEUE.\n"
+            "   They will compress one at a time automatically (batch mode)."
+        )
+        _faq_section(
+            "Q: What is AMPR Emu and how do I use it?",
+            "A: Some PS5 games use PlayGo (APR/AMPR) — a system that streams game data\n"
+            "   progressively. These games need two extra files to work when mounted via\n"
+            "   ShadowMount: libSceAmpr.sprx and libScePlayGo.sprx.\n\n"
+            "   The app handles this automatically:\n"
+            "   • Games with a playgo-chunk.dat are detected as APR automatically\n"
+            "   • For others, the app will ask 'Is this an APR title?' before compression\n"
+            "   • If your AMPR Emu folder isn't set, it will prompt you to point to it\n\n"
+            "   Setup:\n"
+            "   1. Source libSceAmpr.sprx and libScePlayGo.sprx yourself\n"
+            "      (these are PS5 system files — the app cannot provide them)\n"
+            "   2. Put both files in a folder on your PC (e.g. C:\\ampr_emu\\)\n"
+            "   3. Press Start — if it's an APR game, the app will ask you to point to\n"
+            "      the folder if it isn't already set in Settings\n"
+            "   The files will be copied to gameroot\\fakelib\\ and an index will be built"
+        )
 
         # Footer
         footer = ctk.CTkFrame(main, fg_color=BLACK)
@@ -2825,6 +3151,305 @@ class App:
         except Exception:
             pass
 
+    def _toast_notify(self, title: str, message: str):
+        """Show an in-app toast overlay at the bottom-right — always works, no dependencies."""
+        try:
+            toast = ctk.CTkToplevel(self.root)
+            toast.overrideredirect(True)
+            toast.attributes("-topmost", True)
+            toast.configure(fg_color=("#14532d", "#052e16"))
+
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            tw, th = 380, 90
+            toast.geometry(f"{tw}x{th}+{sw - tw - 24}+{sh - th - 56}")
+
+            ctk.CTkLabel(toast, text=f"✅  {title}",
+                         text_color=("#4ade80", "#86efac"),
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         anchor="w").pack(anchor="w", padx=14, pady=(12, 2))
+            ctk.CTkLabel(toast, text=message[:120],
+                         text_color=("white", "#d1fae5"),
+                         font=ctk.CTkFont(size=11),
+                         anchor="w", wraplength=350,
+                         justify="left").pack(anchor="w", padx=14)
+
+            def _dismiss():
+                try:
+                    toast.destroy()
+                except Exception:
+                    pass
+
+            toast.bind("<Button-1>", lambda _e: _dismiss())
+            toast.after(5000, _dismiss)
+        except Exception:
+            pass
+
+    # ── What's New / Feature Tour ─────────────────────────────────────────────
+    def _show_whats_new(self, force: bool = False):
+        """Show What's New dialog on first run or version change. Pass force=True to always show."""
+        _is_new_version = load_settings().get("last_seen_version") != APP_VERSION
+        if not force and not _is_new_version:
+            return
+
+        # Maximize window so the What's New dialog has a proper backdrop —
+        # only when auto-triggered on first launch / after update, not from Help tab
+        if _is_new_version and not force:
+            self.root.state("zoomed")
+
+        win = ctk.CTkToplevel(self.root)
+        win.title(f"What's New in v{APP_VERSION}")
+        _sw = win.winfo_screenwidth()
+        _sh = win.winfo_screenheight()
+        _w, _h = 560, 580
+        win.geometry(f"{_w}x{_h}+{(_sw - _w) // 2}+{max(40, (_sh - _h) // 2)}")
+        win.resizable(False, False)
+        win.configure(fg_color=BLACK)
+        win.attributes("-topmost", True)
+        win.lift()
+        win.after(300, lambda: win.attributes("-topmost", False))
+
+        _done = [False]
+
+        def _dismiss():
+            if not _done[0]:
+                _done[0] = True
+                save_settings({"last_seen_version": APP_VERSION})
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        def _tour():
+            _dismiss()
+            self.root.after(300, lambda: self._start_feature_tour())
+
+        win.protocol("WM_DELETE_WINDOW", _dismiss)
+
+        ctk.CTkLabel(win, text=f"🎮  What's New in v{APP_VERSION}",
+                     font=ctk.CTkFont(size=17, weight="bold"),
+                     text_color=GREEN).pack(anchor="w", padx=24, pady=(20, 2))
+        ctk.CTkLabel(win, text="Here's what changed in this update:",
+                     text_color=MUTED, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=24, pady=(0, 10))
+
+        scroll = ctk.CTkScrollableFrame(win, fg_color=PANEL, corner_radius=8)
+        scroll.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
+        _ITEMS = [
+            ("🌐", "Community Compatibility Database",
+             "Share how well your game works after compressing. Vote-based — one bad report can't override everyone."),
+            ("📋", "Community List Viewer",
+             "Browse and search the community compatibility list directly inside the app."),
+            ("🔄", "Auto Update Check",
+             "Checks for a new version automatically when the app opens. Silent if you're up to date."),
+            ("💾", "Live RAM Meter",
+             "Shows available RAM in real time so you know before compression starts if you're running low."),
+            ("↕",  "Resizable Log Pane",
+             "Drag the divider between the main area and the log to resize them."),
+            ("⚙",  "Block Size Selector",
+             "New setting: auto, auto-fit, 16384, 32768, 65536. Useful for small games or low-RAM setups."),
+            ("📁", "Per-game Output Subfolder",
+             "Puts each game's output into its own output/GameName/ folder automatically."),
+            ("🎮", "APR / AMPR Game Support — Fully Automatic",
+             "Before compression the app asks if the game is APR if it can't detect it. "
+             "If your AMPR emu folder isn't set it prompts you to pick it right then. "
+             "fakelib files are injected and an ampr_emu.index is built automatically."),
+            ("📦", "Multi-image Queue",
+             "Drag in multiple .exfat or .ffpkg disk images — they all get queued at once."),
+            ("🔧", "Auto-retry on Out-of-Memory",
+             "If mkpfs runs out of RAM it automatically drops one CPU core and retries."),
+            ("📊", "Compression Ratio in Log",
+             "Completion message now shows original → compressed size and exact % saved."),
+            ("✨", "What's New Dialog + Feature Tour",
+             "Shows automatically after an update. Re-launch any time from Settings → About "
+             "or the top of the Help / FAQ tab."),
+            ("📈", "Accurate Progress Bar",
+             "Overall % no longer freezes at 97% on large games. Stage order fixed: "
+             "Verify → Outer Compress → Write. Outer MkPFS compression now gets 40% of the bar."),
+        ]
+
+        for icon, title, desc in _ITEMS:
+            card = ctk.CTkFrame(scroll, fg_color=CARD2, corner_radius=6)
+            card.pack(fill="x", pady=(0, 5))
+            ctk.CTkLabel(card, text=icon, font=ctk.CTkFont(size=18),
+                         width=36, anchor="center").pack(side="left", padx=(10, 6), pady=10)
+            tf = ctk.CTkFrame(card, fg_color="transparent")
+            tf.pack(side="left", fill="both", expand=True, padx=(0, 12), pady=8)
+            ctk.CTkLabel(tf, text=title, font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color=WHITE, anchor="w").pack(fill="x")
+            ctk.CTkLabel(tf, text=desc, font=ctk.CTkFont(size=11), text_color=MUTED,
+                         anchor="w", wraplength=420, justify="left").pack(fill="x")
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=(0, 16))
+        ctk.CTkButton(btn_row, text="Got it!", fg_color=GREEN, hover_color=GREEN2,
+                      text_color="#061006", width=110, command=_dismiss).pack(side="right")
+        ctk.CTkButton(btn_row, text="➜  Take a Tour", fg_color=CARD2, text_color=WHITE,
+                      hover_color=("#b0b0b0", "#2a2a2a"), width=140,
+                      command=_tour).pack(side="right", padx=(0, 8))
+        ctk.CTkButton(btn_row, text="Skip", fg_color="transparent", text_color=MUTED,
+                      hover_color=("transparent", "transparent"),
+                      command=_dismiss).pack(side="left")
+
+    def _start_feature_tour(self):
+        self._tour_callout(0)
+
+    _TOUR_STEPS = [
+        {
+            "title": "🌐 Community Compatibility",
+            "body":  "Share how well your game worked after compressing. Browse what everyone has reported.",
+            "tab":   "Compatibility",
+            "pos":   "above-tabs-center",
+        },
+        {
+            "title": "💾 Live RAM Meter",
+            "body":  "Shows available memory in real time so you know before a job runs out of RAM.",
+            "tab":   "Logs",
+            "pos":   "above-tabs-left",
+        },
+        {
+            "title": "↕ Resizable Log Pane",
+            "body":  "Drag the horizontal bar between the main area and the log to make either section bigger.",
+            "pos":   "at-sash",
+        },
+        {
+            "title": "⚙ Settings & Updates",
+            "body":  "Block size, per-game folders, AMPR path, and auto-update check are all in here.",
+            "pos":   "below-settings",
+        },
+    ]
+
+    def _tour_callout(self, idx: int):
+        total = len(self._TOUR_STEPS)
+        if idx >= total:
+            return
+        step = self._TOUR_STEPS[idx]
+        if "tab" in step:
+            self.bottom_tabs.set(step["tab"])
+        self.root.after(180, lambda: self._show_tour_tip(idx, step, total))
+
+    def _show_tour_tip(self, idx: int, step: dict, total: int):
+        self.root.update_idletasks()
+        rx = self.root.winfo_rootx()
+        ry = self.root.winfo_rooty()
+        rw = self.root.winfo_width()
+        rh = self.root.winfo_height()
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+
+        _cw, _ch = 330, 135
+        pad = 14
+        pos = step.get("pos", "mid-center")
+
+        # Bottom tabs top edge — bottom_tabs is always rendered so coords are reliable
+        try:
+            _bt_y = self.bottom_tabs.winfo_rooty()
+            _bt_x = self.bottom_tabs.winfo_rootx()
+            _bt_w = self.bottom_tabs.winfo_width()
+        except Exception:
+            _bt_y = ry + int(rh * 0.55)
+            _bt_x = rx
+            _bt_w = rw
+
+        if pos == "above-tabs-center":
+            # Callout floats just above the tab bar, centered — ▼ points down at the tabs
+            cx = _bt_x + _bt_w // 2 - _cw // 2
+            cy = _bt_y - _ch - pad
+            arrow_txt = "▼"
+
+        elif pos == "above-tabs-left":
+            # Right side, above the log area — ▼ points down at the RAM meter in the log header
+            cx = _bt_x + _bt_w - _cw - pad
+            cy = _bt_y - _ch - pad
+            arrow_txt = "▼"
+
+        elif pos == "at-sash":
+            # Position near the horizontal drag sash — ↕ communicates drag direction
+            try:
+                sash_x, sash_y = self._paned.sash_coord(0)
+                pw_rx = self._paned.winfo_rootx()
+                pw_ry = self._paned.winfo_rooty()
+                # Place callout to the right of centre, just above the sash line
+                cx = pw_rx + int(sash_x) + 60
+                cy = pw_ry + int(sash_y) - _ch - pad
+            except Exception:
+                cx = rx + rw // 2 - _cw // 2
+                cy = _bt_y - _ch - pad
+            arrow_txt = "↕"
+
+        elif pos == "below-settings":
+            # Settings button is in the header — pin callout to the right edge of the window
+            try:
+                by = self._settings_btn.winfo_rooty()
+                bh = self._settings_btn.winfo_height()
+                cy = by + bh + pad
+            except Exception:
+                cy = ry + 80
+            cx = rx + rw - _cw - pad
+            arrow_txt = "▲"
+
+        else:
+            cx = rx + rw // 2 - _cw // 2
+            cy = ry + rh // 2 - _ch // 2
+            arrow_txt = "→"
+
+        cx = max(rx + 4, min(cx, rx + rw - _cw - 4))
+        cy = max(ry + 4, min(cy, ry + rh - _ch - 4))
+
+        tip = ctk.CTkToplevel(self.root)
+        tip.overrideredirect(True)
+        tip.configure(fg_color=("#1e3a5f", "#1a3a5c"))
+        tip.attributes("-topmost", True)
+        tip.geometry(f"{_cw}x{_ch}+{cx}+{cy}")
+
+        inner = ctk.CTkFrame(tip, fg_color=("#253f6a", "#1e3560"), corner_radius=8,
+                              border_width=1, border_color=("#3a5fa0", "#2a4a80"))
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+
+        ctk.CTkLabel(inner, text=f"{arrow_txt}  {step['title']}",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=WHITE, anchor="w").pack(anchor="w", padx=12, pady=(10, 2))
+        ctk.CTkLabel(inner, text=step["body"], font=ctk.CTkFont(size=11),
+                     text_color=("#c8d8f0", "#b0c4e0"), anchor="w",
+                     wraplength=290, justify="left").pack(anchor="w", padx=12, pady=(0, 6))
+
+        btn_r = ctk.CTkFrame(inner, fg_color="transparent")
+        btn_r.pack(fill="x", padx=8, pady=(0, 8))
+
+        def _close_tip():
+            try:
+                tip.destroy()
+            except Exception:
+                pass
+
+        def _next():
+            _close_tip()
+            self.root.after(100, lambda: self._tour_callout(idx + 1))
+
+        if idx + 1 < total:
+            ctk.CTkButton(btn_r, text=f"Next ({idx + 1}/{total - 1}) →",
+                          fg_color=GREEN, hover_color=GREEN2, text_color="#061006",
+                          height=26, font=ctk.CTkFont(size=11),
+                          command=_next).pack(side="right")
+        else:
+            ctk.CTkButton(btn_r, text="Done ✓", fg_color=GREEN, hover_color=GREEN2,
+                          text_color="#061006", height=26, font=ctk.CTkFont(size=11),
+                          command=_close_tip).pack(side="right")
+
+        ctk.CTkButton(btn_r, text="Skip Tour", fg_color="transparent",
+                      text_color=("#8ab0d0", "#7090b0"),
+                      hover_color=("transparent", "transparent"),
+                      height=26, font=ctk.CTkFont(size=11),
+                      command=_close_tip).pack(side="left")
+
+    def _warn_stale_paths(self):
+        paths = "\n".join(self._stale_paths)
+        self.log("WARN",
+            f"⚠  Saved folder path(s) no longer exist and were cleared:\n"
+            f"{paths}\n"
+            f"  Please set new OUTPUT and TEMP folders before starting.")
+        self.bottom_tabs.set("Logs")
+
     def _init_sash(self):
         try:
             total = self._paned.winfo_height()
@@ -2838,6 +3463,244 @@ class App:
             self._settings_win.focus()
             return
         self._settings_win = SettingsWindow(self.root, self)
+
+    def _show_changelog(self):
+        win = ctk.CTkToplevel(self.root)
+        win.title(f"{APP_NAME} — Changelog")
+        win.geometry("560x540")
+        win.resizable(False, False)
+        win.grab_set()
+        win.configure(fg_color=BLACK)
+
+        def _cl_close():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _cl_close)
+        ctk.CTkLabel(win, text="Changelog", text_color=WHITE,
+                      font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(16, 4))
+
+        box = ctk.CTkTextbox(win, fg_color=PANEL, border_width=1, border_color=BORDER,
+                              text_color=WHITE, font=ctk.CTkFont(family="Consolas", size=11),
+                              wrap="word", state="normal")
+        box.pack(fill="both", expand=True, padx=16, pady=(4, 8))
+
+        CHANGELOG = """\
+v1.3.0  (current)
+──────────────────────────────────────────────────
+NEW
+  • Community compatibility list — fetch 5,000+ game
+    reports from the live Google Sheet directly in-app
+  • Search bar + status filter on the compat list
+  • Help / FAQ tab with common questions and a link
+    to the YouTube tutorial
+  • Preset profiles: Fast / Balanced / Max / Low RAM
+    — sets level, CPU cores, and block size at once
+  • Live RAM meter in the log header (updates every 2 s)
+  • Windows toast notification when compression finishes
+  • Auto-retry on OOM — drops CPU count by 1 and
+    retries the failed game automatically
+  • What's New dialog + Feature Tour on first run
+    after an update — skippable, re-launchable from
+    Settings → About or the top of Help / FAQ
+  • APR / AMPR support fully overhauled:
+      – Checkbox removed; detection is now automatic
+      – Auto-detects APR titles via playgo-chunk.dat
+      – Before compression asks "Is this an APR title?"
+        if not auto-detected (single and batch mode)
+      – If AMPR emu folder not set in Settings, prompts
+        to pick it on the spot with a Browse button
+      – fakelib/ folder + SPRX files injected before
+        compression; ampr_emu.index built automatically
+  • "Take a Feature Tour" + "What's New" buttons pinned
+    to a fixed header at the top of Help / FAQ (always
+    visible) and in Settings → About
+  • Auto update check — silent check 3 s after launch
+  • Block size selector: auto, auto-fit, 16384–65536
+  • Per-game output subfolder (output/GameName/)
+  • Multi-image queue (.exfat / .ffpkg disk images)
+  • Compression ratio in completion log (% saved)
+
+FIXED
+  • Overall progress frozen at 97% for large games —
+    stage order was wrong; correct pipeline is now:
+    Scan → Read → Temp PFS → Verify → Outer Compress
+    → Write → Clean. Outer MkPFS now gets 40% of bar
+  • APR _poll crash: GameItem missing ampr_emu attr
+    on items from from_exfat() or session history
+  • Python < 3.10 crash (str | None type hint syntax)
+  • Unicode arrow crash on cp1252 Windows consoles
+  • Multiple game folders false positive — nested
+    sce_sys / eboot.bin no longer counted twice
+  • App crash on startup when saved folder path gone
+  • OOM error message now lists Verify Output first
+  • CPU cores slider uncapped (now goes up to 16)
+
+──────────────────────────────────────────────────
+v1.2.2
+──────────────────────────────────────────────────
+FIXED
+  • Stages permanently stuck on "Scanning Files"
+  • "write" progress bars not advancing Temp PFS %
+  • "Verifying Output" firing at app startup
+  • proc.wait() inside stdout loop — blocked the
+    entire run until process finished
+  • Log file now flushed to disk every 30 s
+  • Log flood at 0% progress bucket fixed
+  • RAR extraction failing without 7-Zip on PATH
+  • Games showing as parent folder name
+  • Duplicate compatibility reports stacking
+  • Startup re-test reminder for untested games
+
+──────────────────────────────────────────────────
+v1.2.1
+──────────────────────────────────────────────────
+  • Resizable log pane (drag the divider)
+  • Smart auto-scroll — scroll up to pause,
+    scroll to bottom to resume
+  • Compatibility report status picker
+    (Working / Partial / Not Working / Not Tested)
+  • Dark / light theme toggle
+  • Queue drag-and-drop reordering
+
+──────────────────────────────────────────────────
+v1.2.0
+──────────────────────────────────────────────────
+  • Archive input — ADD ARCHIVE accepts .zip / .rar
+    / .7z; extracts to temp and queues automatically
+  • Multi-game batch auto-advance — queue multiple
+    games, START processes them all sequentially
+  • Batch counter label (Game X/N | done/failed)
+  • Batch complete summary popup
+  • Auto-clear temp after success option
+  • Post-flight output validator (extension, size)
+  • Summary dialog with Copy Result button
+  • ShadowMount help card in Status & Stats tab
+  • Smart error messages with plain-English hints
+  • Game structure validation before add
+  • Two-pass compression workflow
+  • Block size selector
+  • Verify output option
+  • Compatibility list with CSV export
+  • Drag & drop game folders onto queue
+
+──────────────────────────────────────────────────
+v1.1
+──────────────────────────────────────────────────
+  • Layout redesigned: 2-column + bottom tabs
+    (fixes right-column cutoff at high DPI)
+  • Light-mode rendering fixed
+  • START / CANCEL moved to header (always visible)
+  • Tabs: Logs | Status & Stats | Recent | Stats
+  • Drive / filesystem type detection
+  • Drag-and-drop support (tkinterdnd2)
+
+──────────────────────────────────────────────────
+v1.0
+──────────────────────────────────────────────────
+  • Initial release
+  • Bizkut backend (mkpfs / ffpfsc) integration
+  • Single-game queue with progress + stage display
+  • Settings dialog, first-run setup wizard
+"""
+        box.insert("end", CHANGELOG)
+        box.configure(state="disabled")
+
+        ctk.CTkButton(win, text="Close", fg_color=GREEN, text_color="#061006",
+                       hover_color=GREEN2, command=_cl_close).pack(pady=(0, 14))
+
+    # ── Compact mode ─────────────────────────────────────────────────────────
+
+    def _toggle_compact(self):
+        self._compact_mode = not self._compact_mode
+        try:
+            if self._compact_mode:
+                # Hide command preview panel and shrink sash
+                self._paned.sash_place(0, 0, self._paned.winfo_height() - 180)
+            else:
+                total = self._paned.winfo_height()
+                self._paned.sash_place(0, 0, int(total * 0.62))
+        except Exception:
+            pass
+
+    def _check_for_updates(self, silent: bool = False):
+        import urllib.request as _ur
+        import json as _json
+        import threading
+
+        def _worker():
+            try:
+                req = _ur.Request(GITHUB_API_LATEST,
+                                  headers={"User-Agent": f"PS5-FFPFSC-PRO/{APP_VERSION}",
+                                           "Accept": "application/vnd.github+json"})
+                with _ur.urlopen(req, timeout=10) as resp:
+                    data = _json.loads(resp.read().decode("utf-8"))
+
+                tag      = data.get("tag_name", "").lstrip("v")
+                notes    = data.get("body", "").strip()
+                html_url = data.get("html_url", GITHUB_RELEASES_URL)
+
+                def _ver(v):
+                    try:
+                        return tuple(int(x) for x in v.split("."))
+                    except Exception:
+                        return (0,)
+
+                if _ver(tag) > _ver(APP_VERSION):
+                    self.root.after(0, lambda: self._show_update_dialog(tag, notes, html_url))
+                elif not silent:
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "Up to date",
+                        f"You're running the latest version ({APP_VERSION})."
+                    ))
+            except Exception as exc:
+                if not silent:
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "Update check failed",
+                        f"Could not reach GitHub:\n{exc}"
+                    ))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _show_update_dialog(self, new_version: str, notes: str, url: str):
+        win = ctk.CTkToplevel(self.root)
+        win.title("Update Available")
+        win.geometry("520x420")
+        win.resizable(False, False)
+        win.grab_set()
+        win.configure(fg_color=BLACK)
+
+        def _upd_close():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _upd_close)
+        ctk.CTkLabel(win, text=f"Update Available  —  v{new_version}",
+                      text_color=GREEN, font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(16, 2))
+        ctk.CTkLabel(win, text=f"You have v{APP_VERSION}",
+                      text_color=MUTED, font=ctk.CTkFont(size=11)).pack(pady=(0, 8))
+
+        box = ctk.CTkTextbox(win, fg_color=PANEL, border_width=1, border_color=BORDER,
+                              text_color=WHITE, font=ctk.CTkFont(family="Consolas", size=11),
+                              wrap="word", state="normal")
+        box.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+        box.insert("end", notes if notes else "No release notes provided.")
+        box.configure(state="disabled")
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(pady=(0, 14))
+        ctk.CTkButton(btns, text="⬇  Download Update", fg_color=GREEN, text_color="#061006",
+                       hover_color=GREEN2, width=160,
+                       command=lambda: [__import__("webbrowser").open(url), _upd_close()]).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(btns, text="Later", fg_color=CARD2, text_color=WHITE,
+                       hover_color=("#b0b0b0", "#2a2a2a"), width=80,
+                       command=_upd_close).pack(side="left")
 
     # ── Drag & drop ───────────────────────────────────────────────────────────
     def _on_drop(self, event):
@@ -3336,6 +4199,15 @@ class App:
         self._refresh_space_for_item(item)
         self.update_command_preview()
 
+        # APR status label
+        _is_folder_game = item.path and item.path.is_dir() and not getattr(item, "archive_path", None)
+        if _is_folder_game and getattr(item, "ampr_emu", False):
+            self._ampr_status_var.set("✦ APR / AMPR — fakelib + index will be added")
+        elif _is_folder_game and is_apr_game(item.path):
+            self._ampr_status_var.set("✦ APR title detected (playgo-chunk.dat)")
+        else:
+            self._ampr_status_var.set("")
+
     def _refresh_space_for_item(self, item=None):
         """Recalculate free-space vs what this game needs and update the stats label."""
         if item is None:
@@ -3390,6 +4262,9 @@ class App:
 
     def build_command(self, item):
         out = Path(self.output_var.get().strip())
+        if self.per_game_folder_var.get() and item.name:
+            out = out / item.name
+            out.mkdir(parents=True, exist_ok=True)
         temp = Path(self.temp_var.get().strip())
         backend = backend_base_dir()
         cli_py = Path("backend") / "cli.py"  # macOS-ready pathlib form
@@ -3523,6 +4398,20 @@ class App:
         )
         self.log("INFO", f"── Batch auto-advance: game {current}/{self._batch_total} — {item.name}")
         self.cancel_requested = False
+
+        # APR handling — ask if not auto-detected, then ensure emu folder is set
+        if item.path and item.path.is_dir():
+            if not getattr(item, "ampr_emu", False) and not getattr(item, "_ampr_asked", False):
+                item._ampr_asked = True
+                if self._ask_is_apr(item):
+                    item.ampr_emu = True
+            if getattr(item, "ampr_emu", False):
+                self._ensure_ampr_folder()
+                self._update_ampr_status(item)
+
+        self._inject_ampr_files(item)
+        self._build_ampr_index(item)
+
         self.worker = CLIWorker(self, item, cmd, cwd, out_dir, temp_dir)
         self.worker.start()
 
@@ -3546,6 +4435,251 @@ class App:
         messagebox.showinfo("Batch Complete", msg)
 
     # ── Start / Cancel ────────────────────────────────────────────────────────
+    # ── AMPR Emu ──────────────────────────────────────────────────────────────
+
+    def _build_ampr_index(self, item: "GameItem"):
+        """Build ampr_emu.index in the game folder (AMPR/APR games only).
+        Called after fakelib injection so injected files are included in the index."""
+        if not getattr(item, "ampr_emu", False) or not item.path or not item.path.is_dir():
+            return
+
+        import struct as _struct
+
+        root       = item.path.resolve()
+        output     = root / "ampr_emu.index"
+        output_tmp = output.with_suffix(output.suffix + ".tmp")
+
+        def _key(p):
+            return p.replace("\\", "/").lower()
+
+        def _fnv(p):
+            h = 1469598103934665603
+            for ch in _key(p):
+                h ^= ord(ch)
+                h = (h * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+            return h or 1
+
+        def _make_slots(rows):
+            n = 2
+            while n < len(rows) * 2:
+                n <<= 1
+            table = [(0, 0, 0)] * n
+            mask = n - 1
+            for i, (_, _, path) in enumerate(rows):
+                h = _fnv(path)
+                pos = h & mask
+                while table[pos][1] != 0:
+                    if table[pos][0] == h:
+                        oh, oi, of_ = table[pos]
+                        table[pos] = (oh, oi, of_ | 1)
+                    pos = (pos + 1) & mask
+                table[pos] = (h, i + 1, 0)
+            return table
+
+        def _write(rows):
+            rec_s = _struct.Struct("<IIQq")
+            slt_s = _struct.Struct("<QII")
+            hdr_s = _struct.Struct("<8sIIQQQII")
+            rows = sorted(rows, key=lambda r: _key(r[2]))
+            blob = bytearray()
+            recs = bytearray()
+            for sz, mt, path in rows:
+                enc = path.encode("utf-8") + b"\0"
+                recs += rec_s.pack(len(blob), len(enc) - 1, sz, mt)
+                blob += enc
+            table = _make_slots(rows)
+            p_end = hdr_s.size + len(recs) + len(blob)
+            h_off = (p_end + (slt_s.size - 1)) & ~(slt_s.size - 1)
+            with output_tmp.open("wb") as f:
+                f.write(hdr_s.pack(b"AMPRIDX3", 3, rec_s.size, len(rows),
+                                   len(blob), h_off, slt_s.size, len(table)))
+                f.write(recs)
+                f.write(blob)
+                f.write(b"\0" * (h_off - p_end))
+                for h, ip1, fl in table:
+                    f.write(slt_s.pack(h, ip1, fl))
+            output_tmp.replace(output)
+
+        out_r = output.resolve()
+        tmp_r = output_tmp.resolve()
+        _SKIP = {_key("/app0/ampr_emu.index"), _key("/app0/ampr_emu.index.tmp")}
+        seen: dict = {}
+        rows: list = []
+
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames.sort(key=str.lower)
+            filenames.sort(key=str.lower)
+            for fname in filenames:
+                fpath = Path(dirpath) / fname
+                try:
+                    if not fpath.is_file():
+                        continue
+                    if fpath.resolve() in (out_r, tmp_r):
+                        continue
+                    ipath = "/app0/" + fpath.relative_to(root).as_posix()
+                    ikey = _key(ipath)
+                    if ikey in _SKIP or ikey in seen:
+                        continue
+                    seen[ikey] = ipath
+                    st = fpath.stat()
+                    rows.append((st.st_size, int(st.st_mtime), ipath))
+                except Exception as exc:
+                    self.log("WARN", f"AMPR index: skipping {fpath.name}: {exc}")
+
+        try:
+            _write(rows)
+            self.log("INFO", f"AMPR: built index → ampr_emu.index  ({len(rows):,} files)")
+        except Exception as exc:
+            self.log("WARN", f"AMPR: index build failed: {exc}")
+
+    def _ask_is_apr(self, item: "GameItem") -> bool:
+        """Ask if this game is APR/AMPR when auto-detection found nothing."""
+        result = [False]
+        win = ctk.CTkToplevel(self.root)
+        win.title("APR / AMPR Game?")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.lift()
+        win.after(200, lambda: win.attributes("-topmost", False))
+
+        ctk.CTkLabel(win, text="Is this an APR / AMPR title?",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color=WHITE).pack(padx=28, pady=(22, 4))
+        ctk.CTkLabel(win, text=item.name,
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=GREEN).pack(padx=28, pady=(0, 10))
+        ctk.CTkLabel(win,
+                     text="No playgo-chunk.dat was found — but some APR games\n"
+                          "don't include it in the expected location.\n\n"
+                          "If you select Yes:\n"
+                          "  • A fakelib/ folder will be created inside your game\n"
+                          "  • libSceAmpr.sprx + libScePlayGo.sprx will be injected\n"
+                          "  • An AMPR index (ampr_emu.index) will be built",
+                     font=ctk.CTkFont(size=12), text_color=MUTED,
+                     justify="left").pack(padx=28, pady=(0, 18))
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(pady=(0, 22))
+
+        def _yes():
+            result[0] = True
+            win.destroy()
+
+        def _no():
+            win.destroy()
+
+        self._button(btn_row, "Yes — it's APR", _yes, green=True,
+                     width=160, height=36).pack(side="left", padx=(0, 10))
+        self._button(btn_row, "No", _no, width=90, height=36).pack(side="left")
+
+        win.grab_set()
+        self.root.wait_window(win)
+        return result[0]
+
+    def _ensure_ampr_folder(self) -> bool:
+        """If AMPR emu folder isn't set, prompt the user to pick it. Returns True if ready."""
+        if self._ampr_folder():
+            return True
+
+        result = [False]
+        win = ctk.CTkToplevel(self.root)
+        win.title("AMPR Emu Files Needed")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.lift()
+        win.after(200, lambda: win.attributes("-topmost", False))
+
+        ctk.CTkLabel(win, text="AMPR Emu folder not set",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color=WHITE).pack(padx=28, pady=(22, 4))
+        ctk.CTkLabel(win,
+                     text="This APR game needs two emu files to work after compression:\n"
+                          "  • libSceAmpr.sprx\n"
+                          "  • libScePlayGo.sprx\n\n"
+                          "Point to the folder containing both files.\n"
+                          "They will be copied into a fakelib/ folder inside\n"
+                          "your game directory before compression.\n"
+                          "An AMPR index (ampr_emu.index) will also be built.",
+                     font=ctk.CTkFont(size=12), text_color=MUTED,
+                     justify="left").pack(padx=28, pady=(0, 14))
+
+        path_var = tk.StringVar(value="")
+        path_row = ctk.CTkFrame(win, fg_color="transparent")
+        path_row.pack(fill="x", padx=28, pady=(0, 16))
+        ctk.CTkEntry(path_row, textvariable=path_var, width=300,
+                     placeholder_text="Folder containing libSceAmpr.sprx…").pack(side="left", padx=(0, 8))
+
+        def _browse():
+            from tkinter import filedialog
+            chosen = filedialog.askdirectory(title="Select AMPR Emu Folder")
+            if chosen:
+                path_var.set(chosen)
+
+        self._button(path_row, "Browse", _browse, width=80, height=32).pack(side="left")
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(pady=(0, 22))
+
+        def _confirm():
+            p = path_var.get().strip()
+            if p:
+                self.ampr_var.set(p)
+                save_settings({"ampr_folder": p})
+                result[0] = True
+            win.destroy()
+
+        def _skip():
+            win.destroy()
+
+        self._button(btn_row, "Confirm & Continue", _confirm, green=True,
+                     width=190, height=36).pack(side="left", padx=(0, 10))
+        self._button(btn_row, "Skip (no AMPR)", _skip, width=140, height=36).pack(side="left")
+
+        win.grab_set()
+        self.root.wait_window(win)
+        return result[0]
+
+    def _update_ampr_status(self, item: "GameItem"):
+        """Refresh the APR status label in the Game Details panel."""
+        try:
+            if getattr(item, "ampr_emu", False):
+                self._ampr_status_var.set("✦ APR / AMPR — fakelib + index will be added")
+            else:
+                self._ampr_status_var.set("")
+        except Exception:
+            pass
+
+    def _ampr_folder(self) -> Path | None:
+        p = self.ampr_var.get().strip()
+        if p and Path(p).is_dir():
+            return Path(p)
+        return None
+
+    def _inject_ampr_files(self, item: "GameItem"):
+        """Copy AMPR .sprx files into the game's sce_module/ folder before compression."""
+        ampr_dir = self._ampr_folder()
+        if not ampr_dir or not item.path or not getattr(item, "ampr_emu", False):
+            return
+        import shutil
+        target_dir = item.path / "fakelib"
+        target_dir.mkdir(exist_ok=True)
+        item._ampr_injected = []
+        for fname in AMPR_SPRX_FILES:
+            src = ampr_dir / fname
+            dst = target_dir / fname
+            if not src.exists():
+                self.log("WARN", f"AMPR: {fname} not found in {ampr_dir}")
+                continue
+            if dst.exists():
+                self.log("INFO", f"AMPR: {fname} already present — skipping injection")
+                continue
+            try:
+                shutil.copy2(src, dst)
+                item._ampr_injected.append(dst)
+                self.log("INFO", f"AMPR: injected {fname} -> {dst}")
+            except Exception as exc:
+                self.log("WARN", f"AMPR: failed to inject {fname}: {exc}")
+
     def start(self):
         if not self.output_var.get().strip():
             messagebox.showerror("Missing output", "Select an output folder.")
@@ -3569,6 +4703,20 @@ class App:
         except Exception as e:
             messagebox.showerror("Cannot start", str(e))
             return
+
+        # APR handling — ask if not auto-detected, then ensure emu folder is set
+        if item.path and item.path.is_dir():
+            if not getattr(item, "ampr_emu", False) and not getattr(item, "_ampr_asked", False):
+                item._ampr_asked = True
+                if self._ask_is_apr(item):
+                    item.ampr_emu = True
+            if getattr(item, "ampr_emu", False):
+                self._ensure_ampr_folder()
+                self._update_ampr_status(item)
+
+        # Inject AMPR emu files then build the /app0 path index
+        self._inject_ampr_files(item)
+        self._build_ampr_index(item)
 
         # Show space diagnostics dialog — opens instantly, drive type detects in background
         diag = SpaceDiagnosticsDialog(self.root, item, temp_dir, out_dir)
@@ -3754,6 +4902,18 @@ class App:
         win.geometry("480x380")
         win.resizable(False, False)
         win.lift(); win.focus_force(); win.grab_set()
+
+        def _sm_close():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        win.protocol("WM_DELETE_WINDOW", _sm_close)
         ctk.CTkLabel(win, text="ℹ  ShadowMount Compatibility",
                       text_color=YELLOW, font=ctk.CTkFont(size=15, weight="bold")
                      ).pack(anchor="w", padx=18, pady=(16, 6))
@@ -3764,9 +4924,6 @@ class App:
                           "To mount a compressed game:\n"
                           "  1.  Copy the .ffpfsc file to your PS5 internal storage\n"
                           "      or an external drive (USB SSD/HDD).\n"
-                          "  1a. If you already have a shortcut for this game on the XMB,\n"
-                          "      delete it first — the old entry causes a param error and\n"
-                          "      the game won't appear after mounting.\n"
                           "  2.  Open ShadowMount on your PS5 and let it scan.\n"
                           "      If the game is not detected or the shortcut is not made,\n"
                           "      re-run ShadowMount.\n"
@@ -3781,7 +4938,7 @@ class App:
                       text_color=WHITE, font=ctk.CTkFont(size=12),
                       justify="left", anchor="w", wraplength=440
                      ).pack(anchor="w", padx=18, pady=(0, 4))
-        ctk.CTkButton(win, text="Close", command=win.destroy,
+        ctk.CTkButton(win, text="Close", command=_sm_close,
                        fg_color=GREEN, hover_color=GREEN2, text_color="#061006"
                       ).pack(anchor="e", padx=18, pady=(0, 16))
 
@@ -3794,44 +4951,55 @@ class App:
         win = ctk.CTkToplevel(self.root)
         win.title("Share Compatibility Data")
         win.configure(fg_color=BLACK)
-        win.geometry("480x320")
         win.resizable(False, False)
-        win.transient(self.root)
         win.lift()
         win.focus_force()
-        win.after(50, win.grab_set)
+        # Center at fixed size — no deferred resize that fights CTk layout
+        _sw = win.winfo_screenwidth()
+        _sh = win.winfo_screenheight()
+        _w, _h = 540, 440
+        win.geometry(f"{_w}x{_h}+{(_sw-_w)//2}+{max(40,(_sh-_h)//2)}")
 
-        ctk.CTkLabel(win, text="🎮  Share Compatibility Report?",
-                      font=ctk.CTkFont(size=16, weight="bold"),
-                      text_color=GREEN).pack(anchor="w", padx=20, pady=(18, 4))
-        ctk.CTkLabel(win,
-                      text="Help the community by sharing how well this game compressed.\n"
-                           "No personal data is collected — only game info and result.",
-                      text_color=MUTED, font=ctk.CTkFont(size=12),
-                      justify="left", wraplength=440).pack(anchor="w", padx=20, pady=(0, 12))
+        _win_alive = [True]   # mutable flag — thread checks before touching widgets
 
-        # Summary card
-        card = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
-        card.pack(fill="x", padx=20, pady=(0, 12))
-        rows = [
-            ("Game",             item.name),
-            ("Title ID",         item.title_id),
-            ("Original Size",    format_size(item.size) if item.size else "—"),
-            ("Compressed Size",  format_size(final_size) if final_size else "—"),
-        ]
-        for lbl, val in rows:
-            row = ctk.CTkFrame(card, fg_color="transparent")
-            row.pack(fill="x", padx=14, pady=2)
-            ctk.CTkLabel(row, text=lbl + ":", text_color=MUTED,
-                          font=ctk.CTkFont(size=11), width=130, anchor="w").pack(side="left")
-            ctk.CTkLabel(row, text=val, text_color=WHITE,
-                          font=ctk.CTkFont(size=11), anchor="w").pack(side="left")
+        def _close():
+            _win_alive[0] = False
+            try:
+                win.destroy()
+            except Exception:
+                pass
 
+        win.protocol("WM_DELETE_WINDOW", _close)
+
+        def _safe_after(fn):
+            """Schedule fn on the main thread via root (always alive).
+            Double-checks _win_alive before running so destroyed widgets are never touched."""
+            def _guarded():
+                if _win_alive[0]:
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+            try:
+                self.root.after(0, _guarded)
+            except Exception:
+                pass
+
+        # Pack buttons to BOTTOM first so they're always visible regardless of content height
         status_var = tk.StringVar(value="Not Tested Yet")
 
-        status_lbl = ctk.CTkLabel(win, text="", text_color=MUTED,
-                                   font=ctk.CTkFont(size=11))
-        status_lbl.pack(anchor="w", padx=20)
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=(4, 16))
+
+        status_lbl = ctk.CTkLabel(win, text="", text_color=MUTED, font=ctk.CTkFont(size=11))
+        status_lbl.pack(side="bottom", anchor="w", padx=20)
+
+        _send_btn = ctk.CTkButton(btn_row, text="✓  Yes, Share Data", fg_color=GREEN,
+                       text_color="#061006", hover_color=GREEN2)
+        _send_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(btn_row, text="✗  No Thanks", fg_color=CARD2,
+                       text_color=WHITE, hover_color=("#b0b0b0", "#2a2a2a"),
+                       command=_close).pack(side="left", expand=True, fill="x", padx=(6, 0))
 
         def _send():
             import datetime
@@ -3846,38 +5014,115 @@ class App:
                 "notes":           "",
                 "submitted":       datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
-            add_compat_report(report)
-            self.refresh_compat_list()
-            status_lbl.configure(text="⏳ Sending to community…", text_color=YELLOW)
+            _send_btn.configure(state="disabled", text="⏳ Sending…")
+            status_lbl.configure(text="Sending to community…", text_color=MUTED)
+
             def _post():
+                import urllib.request as _ur, json as _js
+
                 try:
-                    import urllib.request as _ur, json as _js
                     payload = _js.dumps(report).encode()
                     req = _ur.Request(COMMUNITY_URL, data=payload,
-                                      headers={"Content-Type": "application/json"})
-                    with _ur.urlopen(req, timeout=15) as resp:
-                        resp.read()
-                    win.after(0, lambda: status_lbl.configure(
-                        text="✓ Sent! Thank you for contributing.", text_color=("#1a7a40", "#4ade80")))
+                                      headers={"Content-Type": "application/json",
+                                               "User-Agent": f"PS5-FFPFSC-PRO/{APP_VERSION}"})
+                    with _ur.urlopen(req, timeout=20) as resp:
+                        raw = resp.read().decode("utf-8", errors="replace")
+                    # Google Apps Script returns plain "OK" on success, or JSON {"ok":true/false}
+                    if raw.strip() != "OK":
+                        try:
+                            result = _js.loads(raw)
+                        except Exception:
+                            result = {}
+                        if not result.get("ok", False):
+                            _srv_err = result.get("error") or f"Unexpected response: {raw[:150]}"
+                            raise RuntimeError(_srv_err)
+                    # Online succeeded — save locally too
+                    add_compat_report(report)
+                    self.root.after(0, self.refresh_compat_list)
                     self.log("OK", f"Compat report sent: {item.name} — {report['status']}")
-                    win.after(2000, win.destroy)
+                    _safe_after(lambda: status_lbl.configure(
+                        text="✓ Sent to community!", text_color=("#1a7a40", "#4ade80")))
+                    self.root.after(1500, _close)
                 except Exception as e:
-                    win.after(0, lambda: status_lbl.configure(
-                        text=f"⚠ Send failed: {e}", text_color=RED))
-                    self.log("WARN", f"Community share failed: {e}")
+                    # Network failed — save locally as fallback
+                    add_compat_report(report)
+                    self.root.after(0, self.refresh_compat_list)
+                    _err = str(e)[:80]
+                    self.log("WARN", f"Community send failed, saved locally: {e}")
+                    _safe_after(lambda: status_lbl.configure(
+                        text=f"⚠ Saved locally. Error: {_err}",
+                        text_color=YELLOW))
+                    _safe_after(lambda: _send_btn.configure(
+                        state="normal", text="✓  Yes, Share Data"))
+
             threading.Thread(target=_post, daemon=True).start()
 
-        def _skip():
-            win.destroy()
+        _send_btn.configure(command=_send)
 
-        btn_row = ctk.CTkFrame(win, fg_color="transparent")
-        btn_row.pack(fill="x", padx=20, pady=(8, 16))
-        ctk.CTkButton(btn_row, text="✓  Yes, Share Data", fg_color=GREEN,
-                       text_color="#061006", hover_color=GREEN2,
-                       command=_send).pack(side="left", expand=True, fill="x", padx=(0, 6))
-        ctk.CTkButton(btn_row, text="✗  No Thanks", fg_color=CARD2,
-                       text_color=WHITE, hover_color=("#b0b0b0", "#2a2a2a"),
-                       command=_skip).pack(side="left", expand=True, fill="x", padx=(6, 0))
+        # Now pack top content downward
+        ctk.CTkLabel(win, text="🎮  Share Compatibility Report?",
+                      font=ctk.CTkFont(size=16, weight="bold"),
+                      text_color=GREEN).pack(anchor="w", padx=20, pady=(18, 4))
+        ctk.CTkLabel(win,
+                      text="Help the community by sharing how well this game compressed.\n"
+                           "No personal data is collected — only game info and result.",
+                      text_color=MUTED, font=ctk.CTkFont(size=12),
+                      justify="left", wraplength=440).pack(anchor="w", padx=20, pady=(0, 12))
+
+        # Summary card
+        card = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
+        card.pack(fill="x", padx=20, pady=(0, 12))
+        for lbl, val in [
+            ("Game",             item.name),
+            ("Title ID",         item.title_id),
+            ("Original Size",    format_size(item.size) if item.size else "—"),
+            ("Compressed Size",  format_size(final_size) if final_size else "—"),
+        ]:
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=14, pady=2)
+            ctk.CTkLabel(row, text=lbl + ":", text_color=MUTED,
+                          font=ctk.CTkFont(size=11), width=130, anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=val, text_color=WHITE,
+                          font=ctk.CTkFont(size=11), anchor="w").pack(side="left")
+
+        # Status picker
+        _STATUS_COLORS = {
+            "Working":        ("#166534", "#14532d"),
+            "Partial":        ("#854d0e", "#713f12"),
+            "Not Working":    ("#7f1d1d", "#450a0a"),
+            "Not Tested Yet": ("#1e3a5f", "#163155"),
+        }
+        _status_btns: dict[str, ctk.CTkButton] = {}
+        def _pick_status(s):
+            status_var.set(s)
+            for label, btn in _status_btns.items():
+                col = _STATUS_COLORS.get(label, CARD2)
+                try:
+                    btn.configure(fg_color=col if label == s else CARD2)
+                except Exception:
+                    pass
+            try:
+                win.focus_force()
+            except Exception:
+                pass
+
+        ctk.CTkLabel(win, text="Did it work on PS5?", text_color=WHITE,
+                      font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w", padx=20, pady=(4, 4))
+        status_grid = ctk.CTkFrame(win, fg_color="transparent")
+        status_grid.pack(fill="x", padx=20, pady=(0, 4))
+        status_grid.columnconfigure(0, weight=1)
+        status_grid.columnconfigure(1, weight=1)
+        for i, st in enumerate(["Working", "Partial", "Not Working", "Not Tested Yet"]):
+            b = ctk.CTkButton(status_grid, text=st, height=36,
+                               fg_color=CARD2,
+                               hover_color=_STATUS_COLORS.get(st, CARD2),
+                               text_color=WHITE, font=ctk.CTkFont(size=13, weight="bold"),
+                               command=lambda s=st: _pick_status(s))
+            b.grid(row=i // 2, column=i % 2, padx=(0, 4) if i % 2 == 0 else 0,
+                   pady=(0, 4), sticky="ew")
+            _status_btns[st] = b
+        # Highlight the default selection on open
+        _pick_status("Not Tested Yet")
 
     def _check_pending_compat_reports(self):
         """On startup: find history entries with no community report and prompt the user."""
@@ -3971,16 +5216,23 @@ class App:
                 }
                 add_compat_report(report)
                 def _post(r=report):
+                    import urllib.request as _ur, json as _js
                     try:
-                        import urllib.request as _ur, json as _js
                         payload = _js.dumps(r).encode()
                         req = _ur.Request(COMMUNITY_URL, data=payload,
-                                          headers={"Content-Type": "application/json"})
-                        with _ur.urlopen(req, timeout=15) as resp:
-                            resp.read()
+                                          headers={"Content-Type": "application/json",
+                                                   "User-Agent": f"PS5-FFPFSC-PRO/{APP_VERSION}"})
+                        raw = _ur.urlopen(req, timeout=20).read().decode("utf-8", errors="replace")
+                        if raw.strip() != "OK":
+                            try:
+                                result = _js.loads(raw)
+                            except Exception:
+                                result = {}
+                            if not result.get("ok", False):
+                                raise RuntimeError(result.get("error") or f"Unexpected response: {raw[:150]}")
                         self.log("OK", f"Compat report sent: {r['game_title']} — {r['status']}")
                     except Exception as e:
-                        self.log("WARN", f"Community share failed: {e}")
+                        self.log("WARN", f"Community share failed (saved locally): {e}")
                 threading.Thread(target=_post, daemon=True).start()
                 submitted += 1
             self.refresh_compat_list()
@@ -4074,26 +5326,36 @@ class App:
 
         # ── Optionally share to community Google Sheet ────────────────────────
         if getattr(self, "_compat_share_var", None) and self._compat_share_var.get():
-            self._compat_share_status.configure(text="⏳ Sending…", text_color=YELLOW)
+            self._compat_share_status.configure(text="✓ Saved!  ⏳ Sending to community…", text_color=YELLOW)
             def _post():
+                import urllib.request as _ur, json as _js
                 try:
-                    import urllib.request as _ur, json as _js
                     payload = _js.dumps(report).encode()
                     req = _ur.Request(COMMUNITY_URL, data=payload,
-                                      headers={"Content-Type": "application/json"})
-                    with _ur.urlopen(req, timeout=15) as resp:
-                        resp.read()
+                                      headers={"Content-Type": "application/json",
+                                               "User-Agent": f"PS5-FFPFSC-PRO/{APP_VERSION}"})
+                    raw_text = _ur.urlopen(req, timeout=20).read().decode("utf-8", errors="replace")
+                    # Google Apps Script returns plain "OK" on success, or JSON {"ok":true/false}
+                    if raw_text.strip() != "OK":
+                        try:
+                            result = _js.loads(raw_text) if raw_text else {}
+                        except Exception:
+                            result = {}
+                        if not result.get("ok", False):
+                            _srv_err = result.get("error") or f"Unexpected response: {raw_text[:150]}"
+                            raise RuntimeError(_srv_err)
                     self.root.after(0, lambda: self._compat_share_status.configure(
-                        text="✓ Shared!", text_color=("#1a7a40", "#4ade80")))
+                        text="✓ Shared with community!", text_color=("#1a7a40", "#4ade80")))
                     self.log("OK", f"Compat report shared to community: {title or tid}")
                 except Exception as e:
+                    _err = str(e)[:120]
                     self.root.after(0, lambda: self._compat_share_status.configure(
-                        text=f"⚠ Failed: {e}", text_color=RED))
+                        text=f"⚠ Send failed: {_err}", text_color=("#c0392b", "#e74c3c")))
                     self.log("WARN", f"Community share failed: {e}")
-                self.root.after(6000, lambda: self._compat_share_status.configure(text=""))
+                self.root.after(30000, lambda: self._compat_share_status.configure(text=""))
             threading.Thread(target=_post, daemon=True).start()
-
-        messagebox.showinfo("Submitted", f"Report saved for: {title or tid}")
+        else:
+            self.log("OK", f"Report saved locally (community share unchecked): {title or tid}")
 
     def refresh_compat_list(self):
         reports = load_compat()
@@ -4175,6 +5437,119 @@ class App:
                         self.compat_box.insert("end", f"   📝 {note}" + (f"  ({date})" if date else "") + "\n")
 
             self.compat_box.insert("end", "\n")
+        self.compat_box.configure(state="disabled")
+
+    # ── Community list (fetched from Google Sheet via Apps Script doGet) ──────
+
+    def fetch_community_list(self):
+        """Fetch the community compatibility list from the Google Sheet in a background thread."""
+        import urllib.request as _ur
+        import json as _json
+        import threading
+
+        self._compat_count_var.set("Fetching…")
+        self.compat_box.configure(state="normal")
+        self.compat_box.delete("1.0", "end")
+        self.compat_box.insert("end", "Downloading community compatibility list…\n")
+        self.compat_box.configure(state="disabled")
+
+        def _worker():
+            try:
+                req = _ur.Request(COMMUNITY_URL, headers={"User-Agent": f"PS5-FFPFSC-PRO/{APP_VERSION}"})
+                with _ur.urlopen(req, timeout=20) as resp:
+                    payload = _json.loads(resp.read().decode("utf-8"))
+                if not payload.get("ok", False):
+                    raise RuntimeError(payload.get("error", "Server returned ok=false"))
+                entries = payload.get("entries", [])
+                self._community_entries = entries
+                self.root.after(0, lambda: self._apply_compat_filter())
+            except Exception as exc:
+                msg = f"Could not fetch community list:\n{exc}\n\nYou can still view your local reports with ⟳ Local."
+                self._community_entries = []
+                self.root.after(0, lambda: self._show_compat_text(msg, count="Error"))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_compat_filter(self):
+        """Re-render compat_box using current search text and status filter."""
+        entries = self._community_entries
+        query  = self._compat_search_var.get().strip().lower()
+        filt   = self._compat_filter_var.get()
+
+        if filt != "All":
+            entries = [e for e in entries if e.get("status", "") == filt]
+        if query:
+            entries = [
+                e for e in entries
+                if query in e.get("game_title", "").lower()
+                or query in e.get("title_id",  "").lower()
+            ]
+
+        count = len(entries)
+        total = len(self._community_entries)
+        label = f"{count} of {total}" if (query or filt != "All") else f"{total} games"
+        self._compat_count_var.set(label)
+
+        self.compat_box.configure(state="normal")
+        self.compat_box.delete("1.0", "end")
+
+        STATUS_ICON = {"Working": "✅", "Partial": "⚠", "Not Working": "❌", "Not Tested Yet": "❔"}
+
+        if not entries:
+            self.compat_box.insert("end", "No entries match your search." if (query or filt != "All")
+                                   else "No community entries yet.\n\nClick ☁ Fetch Online to download the list.")
+        else:
+            try:
+                _cb = self.compat_box._textbox
+                _has_tags = True
+            except Exception:
+                _has_tags = False
+
+            for e in entries:
+                status  = e.get("status", "Not Tested Yet")
+                icon    = STATUS_ICON.get(status, "❔")
+                name    = e.get("game_title", "Unknown")
+                tid     = e.get("title_id",   "")
+                orig    = e.get("original_size",   "")
+                comp    = e.get("compressed_size", "")
+                smver   = e.get("shadowmount_ver", "")
+                notes   = e.get("notes",           "")
+                reps    = e.get("reports", "")
+                sizes   = f"{orig} -> {comp}" if orig and comp else (orig or comp or "")
+
+                line1 = f"{icon}  {name}"
+                if tid:
+                    line1 += f"  [{tid}]"
+                if reps and str(reps) != "1":
+                    line1 += f"  ({reps} reports)"
+
+                if _has_tags:
+                    _cb.insert("end", f"{icon}  ", "header")
+                    _cb.insert("end", name, "title")
+                    if tid:
+                        _cb.insert("end", f"  [{tid}]", "tid")
+                    if reps and str(reps) != "1":
+                        _cb.insert("end", f"  ({reps} reports)", "header")
+                    _cb.insert("end", "\n")
+                    _cb.insert("end", f"   {status}", status)
+                else:
+                    self.compat_box.insert("end", line1 + "\n")
+                    self.compat_box.insert("end", f"   {status}\n")
+
+                detail_parts = [p for p in [smver and f"SM v{smver}", sizes] if p]
+                if detail_parts:
+                    self.compat_box.insert("end", f"   {'   '.join(detail_parts)}\n")
+                if notes:
+                    self.compat_box.insert("end", f"   {notes}\n")
+                self.compat_box.insert("end", "\n")
+
+        self.compat_box.configure(state="disabled")
+
+    def _show_compat_text(self, text: str, count: str = ""):
+        self._compat_count_var.set(count)
+        self.compat_box.configure(state="normal")
+        self.compat_box.delete("1.0", "end")
+        self.compat_box.insert("end", text)
         self.compat_box.configure(state="disabled")
 
     def export_compat_csv(self):
@@ -4273,6 +5648,39 @@ class App:
         if w and w.is_alive() and w.start_time:
             self.elapsed_var.set(f"Elapsed: {format_duration(time.time() - w.start_time)}")
 
+    def _update_ram_meter(self):
+        try:
+            try:
+                import psutil
+                mem = psutil.virtual_memory()
+                avail_gb = mem.available / 1024**3
+                total_gb = mem.total / 1024**3
+                pct = mem.percent
+                color = GREEN if pct < 70 else ("#facc15" if pct < 85 else "#f87171")
+                self.ram_var.set(f"RAM: {avail_gb:.1f} GB free / {total_gb:.0f} GB  ({pct:.0f}% used)")
+            except ImportError:
+                # Fallback: Windows ctypes (no extra deps)
+                import ctypes
+                class _MEMSTAT(ctypes.Structure):
+                    _fields_ = [("dwLength", ctypes.c_ulong),
+                                 ("dwMemoryLoad", ctypes.c_ulong),
+                                 ("ullTotalPhys", ctypes.c_ulonglong),
+                                 ("ullAvailPhys", ctypes.c_ulonglong),
+                                 ("ullTotalPageFile", ctypes.c_ulonglong),
+                                 ("ullAvailPageFile", ctypes.c_ulonglong),
+                                 ("ullTotalVirtual", ctypes.c_ulonglong),
+                                 ("ullAvailVirtual", ctypes.c_ulonglong),
+                                 ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+                stat = _MEMSTAT()
+                stat.dwLength = ctypes.sizeof(stat)
+                ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+                avail_gb = stat.ullAvailPhys / 1024**3
+                total_gb = stat.ullTotalPhys / 1024**3
+                pct = stat.dwMemoryLoad
+                self.ram_var.set(f"RAM: {avail_gb:.1f} GB free / {total_gb:.0f} GB  ({pct}% used)")
+        except Exception:
+            pass
+
     def _poll(self):
         try:
             self._poll_inner()
@@ -4286,6 +5694,11 @@ class App:
 
     def _poll_inner(self):
         self._tick_elapsed()
+        # Update RAM meter every ~2 s (poll runs every 200 ms → every 10 ticks)
+        self._ram_tick = getattr(self, "_ram_tick", 0) + 1
+        if self._ram_tick >= 10:
+            self._ram_tick = 0
+            self._update_ram_meter()
         try:
             while True:
                 status, payload = self.scan_q.get_nowait()
@@ -4411,21 +5824,14 @@ class App:
                     self.log_box.delete("1.0", "300.0")
                 self.visible_log_lines -= 300
 
-            # Smart auto-scroll: only follow the bottom if the user hasn't scrolled up.
-            # yview() returns (top_fraction, bottom_fraction). If bottom_fraction is
-            # >= 0.98 the scrollbar is at (or very near) the end — keep following.
-            # If the user scrolled up, bottom_fraction < 0.98 — leave their position alone.
-            try:
-                _, bottom = self.log_box._textbox.yview()
-                if bottom >= 0.98:
-                    self.log_box._textbox.see("end")
-            except Exception:
+            if self._log_follow:
                 try:
-                    _, bottom = self.log_box.yview()
-                    if bottom >= 0.98:
-                        self.log_box.see("end")
+                    self.log_box._textbox.see("end")
                 except Exception:
-                    pass
+                    try:
+                        self.log_box.see("end")
+                    except Exception:
+                        pass
 
         try:
             while True:
@@ -4483,12 +5889,18 @@ class App:
 
             if success:
                 self._batch_done += 1
+                _final_sz  = getattr(self.worker, "final_size", 0) if self.worker else 0
+                _orig_sz   = getattr(completed_item, "size", 0) if completed_item else 0
+                _ratio_str = ""
+                if _orig_sz and _final_sz:
+                    _saved     = _orig_sz - _final_sz
+                    _saved_pct = _saved / _orig_sz * 100
+                    _ratio_str = (f"  |  {format_size(_orig_sz)} -> {format_size(_final_sz)}"
+                                  f"  ({_saved_pct:.1f}% saved,  {format_size(_saved)} freed)")
                 self.status_update("Complete", msg, "Complete", 100, 100, "—", "—", "—")
-                self.log("SUCCESS", msg)
+                self.log("SUCCESS", msg + _ratio_str)
                 self.play_complete_sound(True)
-
-                # Auto-fill compatibility form with completed game data
-                _final_sz = getattr(self.worker, "final_size", 0) if self.worker else 0
+                self._toast_notify("Compression Complete", msg + _ratio_str)
                 self._compat_autofill(item=completed_item, final_size=_final_sz)
 
                 # Feature 5: auto-clear temp after success
@@ -4514,9 +5926,27 @@ class App:
                         if self.summary_popup_var.get():
                             self.show_summary_popup()
 
-                # Prompt user to share compatibility data
-                self.root.after(400, lambda: self._prompt_compat_share(completed_item, _final_sz))
+                # Prompt user to share compatibility data (skip during batch — too many popups)
+                if not getattr(self, '_batch_running', False):
+                    self.root.after(400, lambda: self._prompt_compat_share(completed_item, _final_sz))
             else:
+                # Auto-retry on OOM: if MemoryError was detected and cpu_count > 1,
+                # automatically re-queue the same game with one fewer worker.
+                _was_oom = self.worker and getattr(self.worker, "_mem_error_shown", False)
+                _cur_cpu = self.cpu_count_var.get()
+                if _was_oom and completed_item and _cur_cpu != 1:
+                    _retry_cpu = max(1, _cur_cpu - 1) if _cur_cpu > 1 else 1
+                    self.log("WARN",
+                        f"Auto-retry: OOM detected — reducing CPU cores from {_cur_cpu if _cur_cpu > 0 else 'auto'} "
+                        f"to {_retry_cpu} and retrying {completed_item.name}...")
+                    self.cpu_count_var.set(_retry_cpu)
+                    save_settings({"cpu_count": _retry_cpu})
+                    self.queue.insert(0, completed_item)
+                    completed_item.status = "Queued"
+                    self.update_queue_box()
+                    self.root.after(800, self.start)
+                    return
+
                 self._batch_failed += 1
                 self._batch_running = False
                 self.start_btn.configure(state="normal")

@@ -3,173 +3,214 @@
 ════════════════════════════════════════════════════════════════════════
 
 ────────────────────────────────────────────────────────────────────────
-  v1.2.2  (current build)
+  v1.3.0  (current)
+────────────────────────────────────────────────────────────────────────
+
+NEW FEATURES
+
+  COMMUNITY COMPATIBILITY
+  • Live Google Sheet integration — fetches 5,000+ community game
+    reports directly inside the app (Compatibility tab)
+  • Search bar + status filter (Working / Partial / Not Working /
+    Not Tested) on the compatibility list
+  • Vote-based submission — one bad report cannot override the
+    community majority
+  • Duplicate submit protection — resubmitting the same game
+    replaces the existing entry instead of stacking rows
+
+  WHAT'S NEW DIALOG + FEATURE TOUR
+  • First-run dialog after every update shows all new features with
+    descriptions — skippable, re-launchable at any time
+  • "Take a Feature Tour" — interactive arrow callouts pointing to
+    new UI elements one at a time
+  • Re-launchable from Settings → About and the top of Help / FAQ
+    (buttons always visible in a fixed header, not buried in scroll)
+
+  APR / AMPR GAME SUPPORT (fully overhauled)
+  • Checkbox removed — detection and setup are now fully automatic
+  • Auto-detects APR titles via playgo-chunk.dat in sce_sys/
+  • Before compression, if not auto-detected, app asks:
+    "Is this an APR / AMPR title?" with a clear list of what will
+    happen if Yes is selected
+  • If AMPR emu folder is not set in Settings, a second dialog
+    prompts the user to pick the folder right then (Browse button
+    included) — saves the path to Settings automatically
+  • fakelib/ folder created inside the game directory and
+    libSceAmpr.sprx + libScePlayGo.sprx injected before compression
+  • AMPR index (ampr_emu.index) built automatically after injection
+    using the AMPRIDX3 binary format with FNV1a64 hashing and an
+    open-addressed hash table — covers all /app0 paths including
+    the injected fakelib files
+  • APR handling runs in both single-game and batch auto-advance
+    mode — every game in a queue gets the same prompts
+
+  HELP / FAQ TAB
+  • Full FAQ covering common compression errors, OOM, AMPR setup,
+    ShadowMount mounting, and archive input
+  • YouTube tutorial link (KINGDKAK channel)
+  • Tour buttons pinned to a fixed header at the top — always
+    visible regardless of scroll position
+
+  SETTINGS
+  • What's New and Take a Feature Tour buttons in Settings → About
+  • AMPR Emu Folder setting added to Folders section
+
+  COMPRESSION PRESETS
+  • One-click profiles: Fast / Balanced / Max Compression / Low RAM
+    — sets compression level, CPU cores, and block size together
+
+  LIVE RAM METER
+  • Available RAM shown in real time in the log header
+  • Updates every 2 seconds during compression
+
+  AUTO UPDATE CHECK
+  • Silently checks for a new version 3 seconds after the app opens
+  • Only notifies if a newer version is available
+
+  OTHER
+  • Windows toast notification when compression finishes
+  • Auto-retry on out-of-memory — drops CPU count by 1 and retries
+    the failed game automatically
+  • Block size selector: auto, auto-fit, 16384, 32768, 65536
+  • Per-game output subfolder option (output/GameName/)
+  • Multi-image queue — drag in multiple .exfat / .ffpkg images
+  • Compression ratio in completion log (original → compressed size
+    and exact % saved)
+
+FIXED
+
+  PROGRESS BAR
+  • Overall % frozen at 97% for large games — root cause: stage
+    order in _STAGE_ORDER was wrong (Verify was after Compressing
+    and Writing, so the no-backwards guard blocked all transitions
+    after verify finished)
+  • Correct pipeline order now enforced:
+      Scanning → Reading → Creating Temp PFS → Verifying Output
+      → Compressing (outer MkPFS) → Writing Final Image → Cleaning Up
+  • Outer MkPFS compression now receives 40% of the overall bar
+    (was 0% — it was undetectable, progress sat at 97% the whole time)
+  • "outer container" and MkPFS log lines now correctly map to
+    Compressing stage instead of Writing Final Image
+  • Stage weights rebalanced for accurate ETA on large games:
+      Scanning 0–5%  |  Reading 5–15%  |  Temp PFS 15–38%
+      Verify 38–48%  |  Compressing 48–88%  |  Writing 88–97%
+      Cleaning Up 97–100%
+
+  APR / AMPR STABILITY
+  • [ERROR] _poll crash — GameItem objects created via from_exfat()
+    or reconstructed from session history were missing the ampr_emu
+    attribute; added class-level default (ampr_emu = False) and
+    changed all read sites to use getattr() defensively
+  • APR ask dialog now fires in batch auto-advance mode — previously
+    _batch_auto_start() called CLIWorker directly, bypassing start()
+    and the APR check entirely
+
+  OTHER
+  • Python < 3.10 crash (str | None union type hint syntax)
+  • Unicode arrow crash on cp1252 Windows consoles
+  • Multiple game folders false positive — nested sce_sys / eboot.bin
+    no longer counted as a second game
+  • App crash on startup when a saved temp/output folder path no
+    longer exists on disk
+  • OOM error message now correctly lists "Uncheck Verify Output"
+    as step 1
+  • CPU cores slider uncapped — now goes up to 16 cores
+
+────────────────────────────────────────────────────────────────────────
+  v1.2.2
 ────────────────────────────────────────────────────────────────────────
 
 STAGE DISPLAY OVERHAUL
-  • Fixed stages permanently stuck on "Scanning Files" — early backend
-    path strings were triggering "Creating Temp PFS" before scanning
-    began, locking the no-backwards guard on all subsequent stages
+  • Fixed stages permanently stuck on "Scanning Files" — early
+    backend path strings were triggering "Creating Temp PFS" before
+    scanning began, locking the no-backwards guard
   • Fixed "write" progress bars not advancing Temp PFS % — backend
     labels include trailing speed/ETA; switched to first-word matching
   • Fixed "Verifying Output" firing at startup from the MkPFS
     "post-build verify is disabled" info message
-  • Added auto-advance: Compressing 100% now pushes display forward to
-    "Writing Final Image" automatically (backend writes silently)
-  • Stage cascade snap — when a later stage begins, all earlier stages
-    are forced to 100% so breadcrumbs never show stale partial %
-    (e.g. "Temp PFS 5%" on fast SSDs that report few progress bars)
-  • "Writing Final Image" detail text updated to explain 0% stall
+  • Added auto-advance: Compressing 100% now pushes display forward
+    to "Writing Final Image" automatically
+  • Stage cascade snap — when a later stage begins, all earlier
+    stages are forced to 100% so breadcrumbs never show stale %
 
 CRITICAL BUG FIX — stdout / process handling
   • proc.wait() was inside the stdout reading loop — blocked on the
-    first line until the process finished, then ran finish() once per
-    remaining buffered line; fixed to consume all stdout first
+    first line until the process finished; fixed to consume all
+    stdout before calling wait()
 
 RAW LOG FIXES
-  • Log file now flushed to disk every 30 s during the run (previously
-    only written at job completion — deleting it mid-run lost everything)
-  • Log flood fixed — progress entries now only written at 5 % bucket
-    boundaries and at 100 %; removed the "log every 0 % bar" condition
-    that was flooding the log with dozens of identical lines
+  • Log file flushed to disk every 30 s during the run (previously
+    only written at job completion)
+  • Log flood fixed — progress entries only written at 5% bucket
+    boundaries and at 100%
 
 ARCHIVE EXTRACTION
-  • RAR extraction fixed — 7-Zip now detected at default install path
-    (C:\Program Files\7-Zip\7z.exe) without needing it on PATH
-  • _find_root improved — BFS search finds game folder by locating
+  • RAR extraction fixed — 7-Zip detected at default install path
+    without needing it on PATH
+  • _find_root improved — BFS search locates game folder via
     sce_sys/param.json inside extracted content
 
 GAME NAME FIX
-  • Games showing as "PS5 DUMPS" (or any parent folder name) fixed
-  • guess_game_name() priority: (1) read localised title from
-    sce_sys/param.json, (2) strip -app/_app suffix from folder name,
-    (3) never use parent folder name
+  • Games showing as parent folder name fixed
+  • guess_game_name() priority: (1) param.json localised title,
+    (2) strip -app/_app suffix, (3) never use parent folder name
 
 COMMUNITY COMPATIBILITY
-  • Duplicate reports fixed — resubmitting the same game now replaces
-    the existing entry instead of stacking duplicate rows
-  • Compatibility tab groups by Title ID and shows aggregated summary
-    (✅ Working: 3  ⚠ Partial: 1) instead of N identical rows
-  • Startup re-test reminder — 4 s after launch, checks compression
-    history against submitted reports; prompts for any untested games
-    with per-game status dropdown (Working / Partial / Not Working)
-    — "Submit Selected", "Later", or "Don't Ask Again"
-
-SHADOWMOUNT GUIDE
-  • Added Step 1a: delete existing XMB shortcut before mounting to
-    avoid the param error that prevents the game appearing
-
-BUG FIXES
-  • [ERROR] tag no longer fires on lines containing "MemoryError",
-    "TypeError" etc. — switched from substring to word-boundary match
+  • Duplicate reports fixed — resubmitting replaces existing entry
+  • Startup re-test reminder 4 s after launch for untested games
 
 ────────────────────────────────────────────────────────────────────────
-  v1.2  (previous build)
+  v1.2.1
 ────────────────────────────────────────────────────────────────────────
 
-FEATURE 3 — Archive input (ZIP / RAR / 7z)
-  • "ADD ARCHIVE" button accepts .zip, .rar, .7z files
-  • Extracts to a temp subfolder then queues the game automatically
-  • Graceful fallback: tries Python library first (py7zr / rarfile),
-    falls back to unrar.exe / 7z.exe on PATH if library not installed
-  • Clear error message if neither library nor CLI is available
-  • py7zr + rarfile listed in RUN.bat and BUILD_EXE.bat install step
-  • --hidden-import flags added to PyInstaller spec and GitHub CI
-    workflow (all three platforms: Windows, macOS, Linux)
+  • Resizable log pane — drag the divider between the main area
+    and the log panel
+  • Smart auto-scroll — scrolling up in the log pauses auto-scroll;
+    scrolling back to the bottom resumes it
+  • Compatibility report status picker (Working / Partial /
+    Not Working / Not Tested)
+  • Dark / light theme toggle in Settings
+  • Queue drag-and-drop reordering
 
-FEATURE 4 — Multi-game batch auto-advance
-  • Multiple games can be queued via repeated "ADD GAME" / "ADD ARCHIVE"
-    clicks; pressing START once processes them all sequentially
-  • Batch counter label shows "Game X/N  |  ✓ done  ✗ failed" during
-    the run (left panel, below queue stats)
-  • Header status bar updated with game index on each auto-advance
-  • After each successful game the next starts automatically after a
-    600 ms pause (allows logs to flush / UI to refresh)
-  • On failure the batch stops and the ErrorDialog is shown as normal;
-    remaining games stay in the queue
-  • When the full batch finishes a summary popup shows total/done/failed
-  • open-output-folder and show-summary-popup options only fire at the
-    very end of a single-game run (not between batch games)
+────────────────────────────────────────────────────────────────────────
+  v1.2.0
+────────────────────────────────────────────────────────────────────────
 
-FEATURE 5 — Auto-clear temp after success
-  • New checkbox "Auto-clear temp after success" (Options panel)
-  • When enabled, temp folder contents are silently deleted after each
-    successful compression; works with both single and batch runs
-  • Logs the amount of space freed; non-fatal on partial errors
-  • Setting persisted to settings.json via the Settings dialog
-
-FIX #7 — Batch mode UI improvements
-  • Queue label shows "Total: N game(s) | X GB" at all times
-  • Dedicated batch counter row appears only while a batch is running
-  • Shows current game index, completed count, and failed count live
-  • Counter resets to blank when batch finishes or is cancelled
-
-FIX #9 — Stage label rename
-  • "Building PFS Image" renamed to "Creating Temp PFS" everywhere
-  • "Building Image" removed (merged into "Creating Temp PFS")
-  • Stage list now: Scanning Files → Reading Game → Creating Temp PFS
-    → Compressing → Writing Final Image → Verifying Output →
-    Cleaning Up → Complete (8 stages total, up from 6)
-  • All progress tracking, WEIGHTS dict, stage display, and status
-    bar updated consistently
-  • 99%-cap logic (prevents misleading 100% before stage transitions)
-    moved to "Creating Temp PFS" correctly
-
-FIX #10 — ShadowMount compatibility checks
-  • After every successful compression a post-flight validator runs:
-      – Confirms output file exists on disk
-      – Checks extension is exactly .ffpfsc (no double .ffpfsc.ffpfsc)
-      – Warns if output is 0 bytes or suspiciously small (< 1 MB)
-  • Any issues are logged as WARN lines in the Logs tab
-
-FIX #12 — ShadowMount help text
-  • Info card added to the TOOLS panel (Status & Stats tab) explaining:
-      – What .ffpfsc files are
-      – How to mount them in ShadowMount
-      – Why sce_sys/param.json + eboot.bin must be present
-
-FIX #13 / #14 — Compression result export
-  • Summary popup replaced with SummaryDialog (proper CTk window):
-      – Scrollable textbox showing the full compression report
-      – "📋 Copy Result" button — copies report to clipboard, button
-        flashes "✓ Copied!" for 2 seconds
-      – "Close" button
-  • "📋 Copy Last Result" button added to TOOLS panel — works even
-    when "Show summary popup" is disabled; reads FINAL_REPORT_FILE
-
-FIX #15 — macOS / cross-platform preparation
-  • Added open_path(path) helper: os.startfile on Windows, "open" on
-    macOS, "xdg-open" on Linux — all wrapped in try/except
-  • All os.startfile() calls replaced with open_path()
-  • os.name == "nt" guards removed from file/folder open actions
-    (the helper is already platform-aware)
-  • "Open Config Folder" button in Settings now works on all platforms
-  • get_drive_type() and get_filesystem_type() already had nt guards;
-    no change needed there
-
-OTHER IMPROVEMENTS
-  • Elapsed timer ticks independently every 200 ms (no longer freezes
-    during stages where the backend is silent)
-  • Smart error messages: scans raw log for known keywords and shows
-    a plain-English fix hint instead of "Backend exited with code 1"
-  • Game structure validation warns when sce_sys, param.json, or
-    eboot.bin are missing before the game is added to the queue
-  • Hardlink / symlink failure detected mid-run and logged as WARN
-    with a plain-English explanation
+  • Archive input — ADD ARCHIVE accepts .zip, .rar, .7z; extracts
+    to temp and queues the game automatically
+  • Multi-game batch auto-advance — queue multiple games, press
+    START once, they all compress sequentially
+  • Batch counter label (Game X/N | done/failed) in the header
+  • Batch complete summary popup (total / successful / failed)
+  • Auto-clear temp after success option
+  • Post-flight output validator — checks file exists, correct
+    extension, non-zero size
+  • Summary dialog with scrollable report and Copy Result button
+  • ShadowMount help card in Status & Stats tab
+  • Smart error messages — scans log for known keywords and shows
+    plain-English fix hints
+  • Game structure validation warns when sce_sys / param.json /
+    eboot.bin are missing
+  • Two-pass compression workflow
+  • Block size selector
+  • Verify output option
+  • Compatibility list with CSV export
+  • Drag & drop game folders onto queue
+  • open_path() helper for cross-platform file/folder opening
 
 ────────────────────────────────────────────────────────────────────────
   v1.1
 ────────────────────────────────────────────────────────────────────────
 
   • DPI scaling removed; layout redesigned to 2-column + bottom tabs
-    (eliminates right-column cutoff at 200 % DPI)
-  • Light-mode rendering fixed: all colour constants converted to CTk
-    native (light, dark) tuples — no manual recolouring needed
+    (eliminates right-column cutoff at 200% DPI)
+  • Light-mode rendering fixed — all colour constants converted to
+    CTk native (light, dark) tuples
   • START / CANCEL buttons moved to header (always visible)
   • Bottom tabs: Logs | Status & Stats | Recent Compressions |
     Statistics
   • Drive / filesystem type detection (NTFS check for hardlinks)
-  • Drag-and-drop support via tkinterdnd2 (optional dependency)
+  • Drag-and-drop support via tkinterdnd2
 
 ────────────────────────────────────────────────────────────────────────
   v1.0
@@ -180,4 +221,5 @@ OTHER IMPROVEMENTS
   • Single-game queue with progress bars, stage display, and log tab
   • Settings dialog with output / temp folder configuration
   • First-run setup wizard
+
 ════════════════════════════════════════════════════════════════════════

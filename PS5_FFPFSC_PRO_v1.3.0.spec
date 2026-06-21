@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 a = Analysis(
-    ['PS5_FFPFSC_PRO_v1.2.2.py'],
+    ['PS5_FFPFSC_PRO_v1.3.0.py'],
     pathex=[],
     binaries=[],
     datas=[('backend', 'backend')],
