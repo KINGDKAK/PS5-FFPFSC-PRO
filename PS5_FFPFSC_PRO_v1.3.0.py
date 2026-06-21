@@ -325,6 +325,13 @@ _ERROR_PATTERNS: list[tuple[str, str]] = [
     ("winerror 1",
      "Windows system error (WinError 1).\n"
      "Fix: run as administrator."),
+    ("no module named 'cryptography'",
+     "Missing dependency: cryptography.\n"
+     "Fix: run RUN.bat (it installs all dependencies automatically).\n"
+     "     Or: py -m pip install cryptography"),
+    ("no module named",
+     "A required Python package is missing.\n"
+     "Fix: run RUN.bat to install all dependencies, then retry."),
     ("calledprocesserror",
      "A backend subprocess failed — check the raw log for details."),
 ]

@@ -15,9 +15,20 @@ a = Analysis(
         'tkinterdnd2',
         # Pillow image formats
         'PIL._tkinter_finder',
+        # cryptography — used by mkpfs/pfs.py for AES encryption; must be explicit
+        # because it is imported inside the bundled backend sub-package, not the GUI
+        'cryptography',
+        'cryptography.hazmat',
+        'cryptography.hazmat.primitives',
+        'cryptography.hazmat.primitives.ciphers',
+        'cryptography.hazmat.primitives.ciphers.algorithms',
+        'cryptography.hazmat.primitives.ciphers.modes',
+        'cryptography.hazmat.backends',
+        'cryptography.hazmat.backends.openssl',
+        'cryptography.hazmat.backends.openssl.backend',
+        'cryptography.hazmat.bindings._rust',
         # Note: pycparser.lextab / pycparser.yacctab warnings are harmless —
         # those are PLY-generated files that pycparser creates lazily at runtime.
-        # Adding them here makes no difference; the warnings come from pycparser's own hook.
     ],
     hookspath=[],
     hooksconfig={},
