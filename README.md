@@ -52,23 +52,23 @@ Whether you're compressing a single game, batch processing multiple titles, or b
 
 ## ✨ Features
 
-Compress PS5 game dumps into .ffpfsc
-Supports game folders, .exfat, .ffpkg, .zip, .rar, and .7z
-Drag-and-drop support
-Batch compression
-Multi-image queueing
-Compression tuning options
-Compression presets (Fast, Balanced, Max Compression, Low RAM)
-Automatic update checker
-Live RAM meter
-Automatic retry on out-of-memory errors
-Detailed logs and progress tracking
-Per-game output folders
-Compact mode
-Interactive feature tour
-What's New dialog after updates
-Community Compatibility Database
-APR / AMPR game support
+* Compress PS5 game dumps into .ffpfsc
+* Supports game folders, .exfat, .ffpkg, .zip, .rar, and .7z
+* Drag-and-drop support
+* Batch compression
+* Multi-image queueing
+* Compression tuning options
+* Compression presets (Fast, Balanced, Max Compression, Low RAM)
+* Automatic update checker
+* Live RAM meter
+* Automatic retry on out-of-memory errors
+* Detailed logs and progress tracking
+* Per-game output folders
+* Compact mode
+* Interactive feature tour
+* What's New dialog after updates
+* Community Compatibility Database
+* APR / AMPR game support
 ---
 
 ## 📂 Supported Inputs
