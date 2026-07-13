@@ -4270,7 +4270,7 @@ v1.0
     def build_command(self, item):
         out = Path(self.output_var.get().strip())
         if self.per_game_folder_var.get() and item.name:
-            out = out / item.name
+            out = out / str(item.name).replace(":","")
             out.mkdir(parents=True, exist_ok=True)
         temp = Path(self.temp_var.get().strip())
         backend = backend_base_dir()
