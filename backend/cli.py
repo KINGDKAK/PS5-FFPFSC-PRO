@@ -4,6 +4,18 @@ from __future__ import annotations  # makes str|None / list[X] work on Python 3.
 import sys
 import os
 
+# ── Force UTF-8 stdio ─────────────────────────────────────────────────────────
+# On Windows, piped stdout uses the locale codepage (e.g. cp1250), which cannot
+# encode characters like '→' and crashes the backend with UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+# Propagate to child Python processes (mkpfs subprocesses).
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("PYTHONUTF8", "1")
+
 # ── Bundled mkpfs detection ───────────────────────────────────────────────────
 # When this script lives inside a 'backend/' folder, look for 'backend/mkpfs/'
 # and add 'backend/' to sys.path so 'import mkpfs' resolves to the bundled copy.
